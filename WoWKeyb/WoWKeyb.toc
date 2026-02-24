@@ -1,0 +1,8 @@
+## Interface: 100105
+## Title: WoWKeyb
+## Notes: Apply keybinding profiles from WoWKeyb (wowkeyb.gg)
+## Author: WoWKeyb
+## Version: 1.0.0
+## SavedVariables: WoWKeybDB
+
+WoWKeyb.lua

@@ -1,0 +1,13 @@
+package-as: WoWKeyb
+
+ignore:
+  - README.md
+  - CHANGELOG.md
+  - .gitignore
+  - pkgmeta.yaml
+
+license-output: LICENSE
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
