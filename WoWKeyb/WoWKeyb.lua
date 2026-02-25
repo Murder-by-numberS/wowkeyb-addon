@@ -521,7 +521,7 @@ local function createMinimapButton()
     if WoWKeyb.minimapButton or not Minimap then return end
 
     local btn = CreateFrame("Button", "WoWKeybMinimapButton", MinimapCluster or Minimap)
-    btn:SetSize(32, 32)
+    btn:SetSize(31, 31)
     btn:SetFrameStrata("HIGH")
     btn:SetFrameLevel(8)
     btn:SetMovable(true)
@@ -530,15 +530,16 @@ local function createMinimapButton()
     btn:RegisterForDrag("RightButton")
 
     local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(20, 20)
-    icon:SetPoint("CENTER")
+    icon:SetSize(18, 18)
+    icon:SetPoint("CENTER", 0, 0)
     icon:SetTexture("Interface\\AddOns\\WoWKeyb\\media\\wowkeyb")
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     btn.icon = icon
 
     local overlay = btn:CreateTexture(nil, "OVERLAY")
     overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    overlay:SetSize(54, 54)
-    overlay:SetPoint("TOPLEFT", -11, 11)
+    overlay:SetSize(53, 53)
+    overlay:SetPoint("CENTER", 0, 0)
     btn.overlay = overlay
 
     btn:SetScript("OnEnter", function(self)
@@ -730,7 +731,7 @@ function WoWKeyb:ShowImportDialog(profileName)
         edit:SetMultiLine(true)
         edit:SetAutoFocus(false)
         edit:SetFontObject("GameFontHighlight")
-        edit:SetScript("OnEscape", function() importFrame:Hide() end)
+        edit:SetScript("OnEscapePressed", function() importFrame:Hide() end)
         scroll:SetScrollChild(edit)
 
         local closeBtn = CreateFrame("Button", nil, importFrame, "UIPanelButtonTemplate")
