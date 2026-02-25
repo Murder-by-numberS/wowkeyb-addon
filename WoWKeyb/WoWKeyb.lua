@@ -474,6 +474,49 @@ applyProfile = function(profile)
     local PickupSpell = C_Spell and C_Spell.PickupSpell or _G.PickupSpell
     local GetSpellInfo = C_Spell and C_Spell.GetSpellName or _G.GetSpellInfo
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    local layoutSlotToKey = {}
+
+    if hasLayout then
+        -- Build explicit slot -> key mapping from layout slotKeys so action bar bindings
+        -- follow the action bar editor even when spell records are sparse.
+        for barIdx, bar in ipairs(profile.layout.bars) do
+            local slotKeys = bar and bar.slotKeys
+            if type(slotKeys) == "table" then
+                for slotIdx = 1, 12 do
+                    local rawKey = slotKeys[slotIdx]
+                    local wowLayoutKey = normalizeKey(rawKey)
+                    if wowLayoutKey and wowLayoutKey ~= "" then
+                        local slot = ((barIdx - 1) * 12) + slotIdx
+                        if slot >= 1 and slot <= 60 and SLOT_COMMANDS[slot] then
+                            layoutSlotToKey[slot] = wowLayoutKey
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Remove existing bindings for action bar commands before re-applying.
+    -- This prevents stale bindings from older profiles from sticking around.
+    for slot = 1, 60 do
+        local command = SLOT_COMMANDS[slot]
+        if command then
+            local keys = { GetBindingKey(command) }
+            for _, existingKey in ipairs(keys) do
+                if existingKey and existingKey ~= "" then
+                    SetBinding(existingKey)
+                end
+            end
+        end
+    end
+
+    -- Apply layout-defined slot keys immediately, even for empty slots.
+    for slot, wowLayoutKey in pairs(layoutSlotToKey) do
+        local command = SLOT_COMMANDS[slot]
+        if command then
+            SetBinding(wowLayoutKey, command)
+        end
+    end
 
     -- Group by key (WoW allows one binding per key; use first spell if multiple)
     local keyToData = {}
@@ -542,7 +585,8 @@ applyProfile = function(profile)
                 -- 2. Bind key to action bar slot
                 local command = SLOT_COMMANDS[slot]
                 if command then
-                    local ok = SetBinding(wowKey, command)
+                    local bindingKey = layoutSlotToKey[slot] or wowKey
+                    local ok = SetBinding(bindingKey, command)
                     if ok then applied = applied + 1 else skipped = skipped + 1 end
                 else
                     skipped = skipped + 1

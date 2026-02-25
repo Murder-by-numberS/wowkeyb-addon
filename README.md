@@ -72,7 +72,18 @@ You can bind a macro to toggle for quick spec switching:
 
 ## How It Works
 
-The addon uses WoW's `SetBindingSpell` API to bind keys directly to spells. Each key in your WoWKeyb profile is mapped to its spell, so you don't need to place abilities on action bars manually.
+The addon **places spells on action bars** and **binds keys to those slots** – using WoW's default action bar system. This means:
+
+- **Spells appear on your action bars** (main bar, multi-bars)
+- **Keys are bound to action bar slots** (1–12 = main bar, SHIFT+1–12 = bar 2, etc.)
+- **Works with the default WoW UI** – no ElvUI or other addons required
+
+**Slot mapping:**
+- `1`–`12` → Main action bar (slots 1–12)
+- `SHIFT+1`–`12` → Bar 2 (slots 13–24)
+- `CTRL+1`–`12` → Bar 3 (slots 25–36)
+- `ALT+1`–`12` → Bar 4 (slots 37–48)
+- Letter keys (`E`, `R`, `Q`, etc.) → Bar 5 (slots 49–60)
 
 If multiple spells share the same key in your profile, only the first one is used (WoW allows one binding per key).
 
