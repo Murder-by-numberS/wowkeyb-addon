@@ -730,8 +730,25 @@ function WoWKeyb:ShowImportDialog(profileName)
         edit:SetSize(400, 300)
         edit:SetMultiLine(true)
         edit:SetAutoFocus(false)
+        edit:EnableKeyboard(true)
+        edit:EnableMouse(true)
+        edit:SetMaxLetters(0)
         edit:SetFontObject("GameFontHighlight")
+        edit:SetTextInsets(6, 6, 6, 6)
+        edit:SetScript("OnMouseDown", function(self)
+            self:SetFocus()
+        end)
         edit:SetScript("OnEscapePressed", function() importFrame:Hide() end)
+        edit:SetScript("OnEnterPressed", function(self)
+            self:Insert("\n")
+        end)
+        edit:SetScript("OnTextChanged", function(self, userInput)
+            if userInput then
+                local textHeight = self:GetStringHeight() or 0
+                local viewHeight = scroll:GetHeight() or 0
+                scroll:SetVerticalScroll(math.max(0, textHeight - viewHeight))
+            end
+        end)
         scroll:SetScrollChild(edit)
 
         local closeBtn = CreateFrame("Button", nil, importFrame, "UIPanelButtonTemplate")
