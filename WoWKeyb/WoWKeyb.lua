@@ -6,28 +6,31 @@
 
 local addonName, WoWKeyb = ...
 WoWKeyb.addonName = addonName
+local BLIZZARD_DEFAULT_PROFILE = "Blizzard Default"
 
 -- Default saved variables
-WoWKeybDB = WoWKeybDB or {
-    profiles = {},
-    lastApplied = nil,
-    currentProfile = nil,   -- Last profile applied (for toggle)
-    previousProfile = nil,  -- Profile before current (for toggle)
-    barMode = "blizzard",   -- "blizzard" | "custom"
-    customBarsUnlocked = false, -- custom mode move toggle
-    customBarPositions = {}, -- per-profile bar offsets (x/y from UI center)
-}
-WoWKeybDB.minimap = WoWKeybDB.minimap or {
-    hide = false,
-    angle = 225,
-}
-if WoWKeybDB.barMode ~= "blizzard" and WoWKeybDB.barMode ~= "custom" then
-    WoWKeybDB.barMode = "blizzard"
+local function ensureDBDefaults()
+    if type(WoWKeybDB) ~= "table" then
+        WoWKeybDB = {}
+    end
+    WoWKeybDB.profiles = WoWKeybDB.profiles or {}
+    if WoWKeybDB.lastApplied == nil then WoWKeybDB.lastApplied = nil end
+    if WoWKeybDB.currentProfile == nil then WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE end
+    if WoWKeybDB.previousProfile == nil then WoWKeybDB.previousProfile = nil end
+    if WoWKeybDB.customBarsUnlocked == nil then
+        WoWKeybDB.customBarsUnlocked = false
+    end
+    if type(WoWKeybDB.customBarPositions) ~= "table" then
+        WoWKeybDB.customBarPositions = {}
+    end
+    if type(WoWKeybDB.minimap) ~= "table" then
+        WoWKeybDB.minimap = {}
+    end
+    if WoWKeybDB.minimap.hide == nil then WoWKeybDB.minimap.hide = false end
+    if WoWKeybDB.minimap.angle == nil then WoWKeybDB.minimap.angle = 225 end
 end
-if WoWKeybDB.customBarsUnlocked == nil then
-    WoWKeybDB.customBarsUnlocked = false
-end
-WoWKeybDB.customBarPositions = WoWKeybDB.customBarPositions or {}
+
+ensureDBDefaults()
 
 -- WoW uses hyphen for modifiers (SHIFT-1), WoWKeyb uses plus (SHIFT+1)
 local function toWoWKeyFormat(key)
@@ -73,6 +76,8 @@ for i = 1, 12 do KEY_TO_LAYOUT_SLOT[tostring(i)] = { barIndex = 0, slotIndex = i
 for i = 1, 12 do KEY_TO_LAYOUT_SLOT["SHIFT-" .. i] = { barIndex = 1, slotIndex = i - 1 } end
 for i = 1, 12 do KEY_TO_LAYOUT_SLOT["CTRL-" .. i] = { barIndex = 2, slotIndex = i - 1 } end
 for i = 1, 12 do KEY_TO_LAYOUT_SLOT["ALT-" .. i] = { barIndex = 3, slotIndex = i - 1 } end
+local getStoredProfile
+local applyProfile
 
 -- Frames created by WoWKeyb for custom layout (cleared on each apply)
 local WoWKeybCustomFrames = {}
@@ -109,6 +114,7 @@ end
 
 -- Apply profile using custom layout (SecureActionButton frames at saved positions)
 local function applyProfileWithLayout(profile)
+    ensureDBDefaults()
     local layout = profile.layout
     if not layout or not layout.bars or #layout.bars == 0 then
         return false, "No layout in profile"
@@ -419,7 +425,55 @@ local function applyBarModeVisibility(useCustomBars)
     end
 end
 
-local function applyProfile(profile)
+local function getProfileBarMode(profile)
+    local layout = profile and profile.layout or nil
+    local rawMode = layout and (layout.barMode or layout.bar_mode) or nil
+    if type(rawMode) == "string" then
+        local normalized = rawMode:lower()
+        if normalized == "custom" then return "custom" end
+        if normalized == "blizzard" then return "blizzard" end
+    end
+    -- Backward compatible fallback: if layout exists but mode wasn't exported, treat as custom.
+    if layout and layout.bars and #layout.bars > 0 then
+        return "custom"
+    end
+    return "blizzard"
+end
+
+local function applyBlizzardDefaultProfile()
+    ensureDBDefaults()
+    clearCustomLayoutFrames()
+    applyBarModeVisibility(false)
+    WoWKeybDB.lastApplied = {
+        name = BLIZZARD_DEFAULT_PROFILE,
+        applied = 0,
+        skipped = 0,
+        time = time(),
+    }
+    if WoWKeybDB.currentProfile ~= BLIZZARD_DEFAULT_PROFILE then
+        WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
+        WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+    end
+    return true, "Applied Blizzard default bars"
+end
+
+local function applySelectionByName(target)
+    ensureDBDefaults()
+    if not target or target == "" then
+        return false, "No profile selected"
+    end
+    if target == BLIZZARD_DEFAULT_PROFILE then
+        return applyBlizzardDefaultProfile()
+    end
+    local profile = getStoredProfile(target)
+    if not profile then
+        return false, "Profile not found: " .. tostring(target)
+    end
+    return applyProfile(profile)
+end
+
+applyProfile = function(profile)
+    ensureDBDefaults()
     if not profile or not profile.keybinds or #profile.keybinds == 0 then
         return false, "No keybinds in profile"
     end
@@ -428,7 +482,7 @@ local function applyProfile(profile)
         return false, "Cannot apply keybindings while in combat"
     end
 
-    local useCustomBars = WoWKeybDB.barMode == "custom"
+    local useCustomBars = getProfileBarMode(profile) == "custom"
     local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
     if useCustomBars and hasLayout then
         applyBarModeVisibility(true)
@@ -554,11 +608,7 @@ local function toggleProfile()
         return false, "No previous profile to toggle to. Apply at least two different profiles first."
     end
     local target = WoWKeybDB.previousProfile
-    local profile = getStoredProfile(target)
-    if not profile then
-        return false, "Previous profile not found: " .. tostring(target)
-    end
-    local ok, result = applyProfile(profile)
+    local ok, result = applySelectionByName(target)
     if ok then
         return true, "Switched to: " .. target
     end
@@ -600,7 +650,7 @@ local function storeProfile(profileName, profile)
 end
 
 -- Get stored profile
-local function getStoredProfile(profileName)
+getStoredProfile = function(profileName)
     return WoWKeybDB.profiles[profileName or ""]
 end
 
@@ -629,6 +679,7 @@ local function toJSONArray(items)
 end
 
 local function serializeSyncedProfile(profileName, profile)
+    ensureDBDefaults()
     if not profile then
         return nil, "Profile not found"
     end
@@ -700,7 +751,7 @@ local function serializeSyncedProfile(profileName, profile)
 
     local layoutJson = table.concat({
         '{"bars":', toJSONArray(layoutChunks),
-        ',"barMode":"', jsonEscape(layout.barMode or WoWKeybDB.barMode or "custom"),
+        ',"barMode":"', jsonEscape(layout.barMode or layout.bar_mode or getProfileBarMode(profile)),
         '","screenWidth":', tostring(screenW),
         ',"screenHeight":', tostring(screenH),
         ',"barGap":', tostring(tonumber(layout.barGap) or 16),
@@ -842,59 +893,9 @@ local function createSettingsPanel()
     panel.refreshCurrentProfileText = refreshCurrentProfileText
     refreshCurrentProfileText()
 
-    local modeLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    modeLabel:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
-    modeLabel:SetText("Action bar mode:")
-
-    local modeDropdown = CreateFrame("Frame", "WoWKeybModeDropdown", panel, "UIDropDownMenuTemplate")
-    modeDropdown:SetPoint("TOPLEFT", modeLabel, "BOTTOMLEFT", -16, -4)
-    UIDropDownMenu_SetWidth(modeDropdown, 220)
-
-    local function getModeLabel(mode)
-        if mode == "custom" then return "WoWKeyb Custom Bars" end
-        return "Blizzard Bars"
-    end
-
-    local function refreshModeSelector()
-        UIDropDownMenu_Initialize(modeDropdown, function(self, level)
-            local blizzInfo = UIDropDownMenu_CreateInfo()
-            blizzInfo.text = "Blizzard Bars"
-            blizzInfo.checked = (WoWKeybDB.barMode ~= "custom")
-            blizzInfo.func = function()
-                WoWKeybDB.barMode = "blizzard"
-                UIDropDownMenu_SetText(modeDropdown, getModeLabel(WoWKeybDB.barMode))
-                if not InCombatLockdown() then
-                    applyBarModeVisibility(false)
-                else
-                    print("|cffffcc00[WoWKeyb]|r Bar visibility will update after combat.")
-                end
-                print("|cff00ff00[WoWKeyb]|r Action bar mode set to Blizzard Bars.")
-            end
-            UIDropDownMenu_AddButton(blizzInfo, level)
-
-            local customInfo = UIDropDownMenu_CreateInfo()
-            customInfo.text = "WoWKeyb Custom Bars"
-            customInfo.checked = (WoWKeybDB.barMode == "custom")
-            customInfo.func = function()
-                WoWKeybDB.barMode = "custom"
-                UIDropDownMenu_SetText(modeDropdown, getModeLabel(WoWKeybDB.barMode))
-                if not InCombatLockdown() then
-                    applyBarModeVisibility(true)
-                else
-                    print("|cffffcc00[WoWKeyb]|r Bar visibility will update after combat.")
-                end
-                print("|cff00ff00[WoWKeyb]|r Action bar mode set to WoWKeyb Custom Bars.")
-            end
-            UIDropDownMenu_AddButton(customInfo, level)
-        end)
-        UIDropDownMenu_SetText(modeDropdown, getModeLabel(WoWKeybDB.barMode))
-    end
-    panel.refreshModeSelector = refreshModeSelector
-    refreshModeSelector()
-
     local moveBarsBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     moveBarsBtn:SetSize(220, 24)
-    moveBarsBtn:SetPoint("TOPLEFT", modeDropdown, "BOTTOMLEFT", 16, -8)
+    moveBarsBtn:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
     local function refreshMoveBarsButton()
         if WoWKeybDB.customBarsUnlocked then
             moveBarsBtn:SetText("Lock Custom Bars")
@@ -918,7 +919,7 @@ local function createSettingsPanel()
     moveHelpText:SetPoint("TOPLEFT", moveBarsBtn, "BOTTOMLEFT", 0, -6)
     moveHelpText:SetWidth(520)
     moveHelpText:SetJustifyH("LEFT")
-    moveHelpText:SetText("Tip: In WoWKeyb Custom Bars mode, unlock to drag bars in-game. Positions are saved per profile.")
+    moveHelpText:SetText("Tip: Mode comes from the selected profile. Unlock to drag custom bars in-game. Positions are saved per profile.")
 
     local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     profileLabel:SetPoint("TOPLEFT", moveHelpText, "BOTTOMLEFT", 0, -14)
@@ -930,40 +931,46 @@ local function createSettingsPanel()
 
     local function refreshProfileSelector()
         local profiles = listStoredProfiles()
-        if #profiles == 0 then
-            selectedProfileName = nil
-            UIDropDownMenu_Initialize(profileDropdown, function() end)
-            UIDropDownMenu_SetText(profileDropdown, "No profiles")
-            return
+        local selectorOptions = { BLIZZARD_DEFAULT_PROFILE }
+        for _, name in ipairs(profiles) do
+            table.insert(selectorOptions, name)
         end
 
         local isValidSelection = false
-        for _, name in ipairs(profiles) do
+        for _, name in ipairs(selectorOptions) do
             if name == selectedProfileName then
                 isValidSelection = true
                 break
             end
         end
         if not isValidSelection then
-            selectedProfileName = WoWKeybDB.currentProfile
-            if not selectedProfileName or not WoWKeybDB.profiles[selectedProfileName] then
-                selectedProfileName = profiles[1]
+            selectedProfileName = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
+            local selectedIsStoredProfile = selectedProfileName == BLIZZARD_DEFAULT_PROFILE or WoWKeybDB.profiles[selectedProfileName]
+            if not selectedIsStoredProfile then
+                selectedProfileName = BLIZZARD_DEFAULT_PROFILE
             end
         end
 
         UIDropDownMenu_Initialize(profileDropdown, function(self, level)
-            for _, name in ipairs(profiles) do
+            for _, name in ipairs(selectorOptions) do
                 local info = UIDropDownMenu_CreateInfo()
                 info.text = name
                 info.checked = (name == selectedProfileName)
                 info.func = function()
                     selectedProfileName = name
                     UIDropDownMenu_SetText(profileDropdown, name)
+                    local ok, result = applySelectionByName(name)
+                    if ok then
+                        print("|cff00ff00[WoWKeyb]|r " .. result)
+                    else
+                        print("|cffff0000[WoWKeyb]|r " .. tostring(result or "Failed to apply"))
+                    end
+                    refreshCurrentProfileText()
                 end
                 UIDropDownMenu_AddButton(info, level)
             end
         end)
-        UIDropDownMenu_SetText(profileDropdown, selectedProfileName or profiles[1])
+        UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
     end
     panel.refreshProfileSelector = refreshProfileSelector
     refreshProfileSelector()
@@ -986,6 +993,10 @@ local function createSettingsPanel()
             print("|cffff0000[WoWKeyb]|r No selected profile to export.")
             return
         end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be exported.")
+            return
+        end
         WoWKeyb:ShowExportDialog(target)
     end)
 
@@ -1002,38 +1013,17 @@ local function createSettingsPanel()
         end
     end)
 
-    local applyBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    applyBtn:SetSize(180, 24)
-    applyBtn:SetPoint("TOPLEFT", listBtn, "BOTTOMLEFT", 0, -8)
-    applyBtn:SetText("Apply Selected Profile")
-    applyBtn:SetScript("OnClick", function()
-        local target = selectedProfileName
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No selected profile. Import one first.")
-            return
-        end
-        local profile = getStoredProfile(target)
-        if not profile then
-            print("|cffff0000[WoWKeyb]|r Selected profile not found in storage.")
-            refreshProfileSelector()
-            return
-        end
-        local ok, result = applyProfile(profile)
-        if ok then
-            print("|cff00ff00[WoWKeyb]|r " .. result)
-        else
-            print("|cffff0000[WoWKeyb]|r " .. tostring(result or "Failed to apply"))
-        end
-        refreshCurrentProfileText()
-    end)
-
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetPoint("TOPLEFT", listBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Selected Profile")
     local function deleteProfileByName(target)
         if not target then
             print("|cffff0000[WoWKeyb]|r No selected profile.")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be deleted.")
             return
         end
         if not WoWKeybDB.profiles[target] then
@@ -1048,19 +1038,16 @@ local function createSettingsPanel()
         print("|cff00ff00[WoWKeyb]|r Deleted profile: " .. tostring(target))
 
         if WoWKeybDB.currentProfile == target then
-            WoWKeybDB.currentProfile = nil
+            WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
             if WoWKeybDB.previousProfile and WoWKeybDB.profiles[WoWKeybDB.previousProfile] then
                 WoWKeybDB.currentProfile = WoWKeybDB.previousProfile
             end
         end
         if WoWKeybDB.previousProfile == target then
-            WoWKeybDB.previousProfile = nil
+            WoWKeybDB.previousProfile = BLIZZARD_DEFAULT_PROFILE
         end
         if not WoWKeybDB.currentProfile then
-            for name, _ in pairs(WoWKeybDB.profiles) do
-                WoWKeybDB.currentProfile = name
-                break
-            end
+            WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
         end
         selectedProfileName = WoWKeybDB.currentProfile
 
@@ -1096,7 +1083,7 @@ local function createSettingsPanel()
     helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
     helpText:SetWidth(520)
     helpText:SetJustifyH("LEFT")
-    helpText:SetText("Tip: You can also use slash commands: /wowkeyb import <name>, /wowkeyb apply <name>, /wowkeyb list, /wowkeyb delete <name>")
+    helpText:SetText("Tip: Selecting a profile auto-applies it. You can also use slash commands: /wowkeyb import <name>, /wowkeyb switch <name>, /wowkeyb list, /wowkeyb delete <name>")
 
     WoWKeyb.optionsPanel = panel
 
@@ -1224,6 +1211,7 @@ local function slashHandler(msg)
     if cmd == "apply" or cmd == "a" then
         if arg == "" then
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb apply <profile name>")
+            print("|cff00ff00[WoWKeyb]|r Default profile: " .. BLIZZARD_DEFAULT_PROFILE)
             local list = listStoredProfiles()
             if #list > 0 then
                 print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
@@ -1232,12 +1220,7 @@ local function slashHandler(msg)
             end
             return
         end
-        local profile = getStoredProfile(arg)
-        if not profile then
-            print("|cffff0000[WoWKeyb]|r Profile not found: " .. arg)
-            return
-        end
-        local ok, result = applyProfile(profile)
+        local ok, result = applySelectionByName(arg)
         if ok then
             print("|cff00ff00[WoWKeyb]|r " .. result)
         else
@@ -1267,6 +1250,10 @@ local function slashHandler(msg)
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb delete <profile name>")
             return
         end
+        if arg == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be deleted.")
+            return
+        end
         if WoWKeybDB.profiles[arg] then
             WoWKeybDB.profiles[arg] = nil
             print("|cff00ff00[WoWKeyb]|r Deleted profile: " .. arg)
@@ -1290,12 +1277,7 @@ local function slashHandler(msg)
             end
             return
         end
-        local profile = getStoredProfile(arg)
-        if not profile then
-            print("|cffff0000[WoWKeyb]|r Profile not found: " .. arg)
-            return
-        end
-        local ok, result = applyProfile(profile)
+        local ok, result = applySelectionByName(arg)
         if ok then
             print("|cff00ff00[WoWKeyb]|r " .. result)
         else
@@ -1332,6 +1314,10 @@ local function slashHandler(msg)
         local target = arg ~= "" and arg or WoWKeybDB.currentProfile
         if not target then
             print("|cffff0000[WoWKeyb]|r No target profile. Usage: /wowkeyb export <profile name>")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be exported.")
             return
         end
         if not getStoredProfile(target) then
