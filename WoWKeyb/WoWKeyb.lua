@@ -425,21 +425,6 @@ local function applyBarModeVisibility(useCustomBars)
     end
 end
 
-local function getProfileBarMode(profile)
-    local layout = profile and profile.layout or nil
-    local rawMode = layout and (layout.barMode or layout.bar_mode) or nil
-    if type(rawMode) == "string" then
-        local normalized = rawMode:lower()
-        if normalized == "custom" then return "custom" end
-        if normalized == "blizzard" then return "blizzard" end
-    end
-    -- Backward compatible fallback: if layout exists but mode wasn't exported, treat as custom.
-    if layout and layout.bars and #layout.bars > 0 then
-        return "custom"
-    end
-    return "blizzard"
-end
-
 local function applyBlizzardDefaultProfile()
     ensureDBDefaults()
     clearCustomLayoutFrames()
@@ -482,23 +467,7 @@ applyProfile = function(profile)
         return false, "Cannot apply keybindings while in combat"
     end
 
-    local useCustomBars = getProfileBarMode(profile) == "custom"
     local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
-    if useCustomBars and hasLayout then
-        applyBarModeVisibility(true)
-        local ok, result = applyProfileWithLayout(profile)
-        if ok then
-            local profileName = profile.name or "Unknown"
-            WoWKeybDB.lastApplied = { name = profileName, applied = 0, skipped = 0, time = time() }
-            if WoWKeybDB.currentProfile ~= profileName then
-                WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-                WoWKeybDB.currentProfile = profileName
-            end
-        end
-        return ok, result
-    end
-
-    -- Blizzard mode (or fallback when layout is unavailable in custom mode).
     clearCustomLayoutFrames()
     applyBarModeVisibility(false)
 
@@ -599,7 +568,7 @@ applyProfile = function(profile)
         WoWKeybDB.currentProfile = profileName
     end
 
-    return true, string.format("Applied %d keybindings (%d skipped)", applied, skipped)
+    return true, string.format("Applied %d keybindings (%d skipped) [mode: blizzard]", applied, skipped)
 end
 
 -- Toggle between current and previous profile
@@ -713,22 +682,10 @@ local function serializeSyncedProfile(profileName, profile)
     local layoutChunks = {}
     local screenW = tonumber(layout.screenWidth) or 2560
     local screenH = tonumber(layout.screenHeight) or 1440
-    local wowW = GetScreenWidth()
-    local wowH = GetScreenHeight()
-    local scaleX = wowW / screenW
-    local scaleY = wowH / screenH
-    local profileOverrides = WoWKeybDB.customBarPositions[tostring(profileName)] or {}
-
     for _, bar in ipairs(bars) do
         local pos = bar.position or {}
         local px = tonumber(pos.x) or (screenW / 2)
         local py = tonumber(pos.y) or (screenH / 2)
-
-        local override = profileOverrides[bar.id]
-        if override and type(override.x) == "number" and type(override.y) == "number" then
-            px = (override.x / scaleX) + (screenW / 2)
-            py = (screenH / 2) - (override.y / scaleY)
-        end
 
         local slotKeys = {}
         for _, key in ipairs(bar.slotKeys or {}) do
@@ -751,7 +708,7 @@ local function serializeSyncedProfile(profileName, profile)
 
     local layoutJson = table.concat({
         '{"bars":', toJSONArray(layoutChunks),
-        ',"barMode":"', jsonEscape(layout.barMode or layout.bar_mode or getProfileBarMode(profile)),
+        ',"barMode":"', jsonEscape("blizzard"),
         '","screenWidth":', tostring(screenW),
         ',"screenHeight":', tostring(screenH),
         ',"barGap":', tostring(tonumber(layout.barGap) or 16),
@@ -893,36 +850,8 @@ local function createSettingsPanel()
     panel.refreshCurrentProfileText = refreshCurrentProfileText
     refreshCurrentProfileText()
 
-    local moveBarsBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    moveBarsBtn:SetSize(220, 24)
-    moveBarsBtn:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
-    local function refreshMoveBarsButton()
-        if WoWKeybDB.customBarsUnlocked then
-            moveBarsBtn:SetText("Lock Custom Bars")
-        else
-            moveBarsBtn:SetText("Unlock + Move Custom Bars")
-        end
-    end
-    moveBarsBtn:SetScript("OnClick", function()
-        WoWKeybDB.customBarsUnlocked = not WoWKeybDB.customBarsUnlocked
-        setCustomBarsMovableEnabled(WoWKeybDB.customBarsUnlocked == true)
-        refreshMoveBarsButton()
-        if WoWKeybDB.customBarsUnlocked then
-            print("|cff00ff00[WoWKeyb]|r Custom bars unlocked. Drag bars with left mouse.")
-        else
-            print("|cff00ff00[WoWKeyb]|r Custom bars locked.")
-        end
-    end)
-    refreshMoveBarsButton()
-
-    local moveHelpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    moveHelpText:SetPoint("TOPLEFT", moveBarsBtn, "BOTTOMLEFT", 0, -6)
-    moveHelpText:SetWidth(520)
-    moveHelpText:SetJustifyH("LEFT")
-    moveHelpText:SetText("Tip: Mode comes from the selected profile. Unlock to drag custom bars in-game. Positions are saved per profile.")
-
     local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    profileLabel:SetPoint("TOPLEFT", moveHelpText, "BOTTOMLEFT", 0, -14)
+    profileLabel:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
     profileLabel:SetText("Selected profile:")
 
     local profileDropdown = CreateFrame("Frame", "WoWKeybProfileDropdown", panel, "UIDropDownMenuTemplate")
@@ -1000,22 +929,9 @@ local function createSettingsPanel()
         WoWKeyb:ShowExportDialog(target)
     end)
 
-    local listBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    listBtn:SetSize(180, 24)
-    listBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
-    listBtn:SetText("List Profiles")
-    listBtn:SetScript("OnClick", function()
-        local list = listStoredProfiles()
-        if #list == 0 then
-            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
-        else
-            print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
-        end
-    end)
-
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", listBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Selected Profile")
     local function deleteProfileByName(target)
         if not target then
@@ -1083,7 +999,7 @@ local function createSettingsPanel()
     helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
     helpText:SetWidth(520)
     helpText:SetJustifyH("LEFT")
-    helpText:SetText("Tip: Selecting a profile auto-applies it. You can also use slash commands: /wowkeyb import <name>, /wowkeyb switch <name>, /wowkeyb list, /wowkeyb delete <name>")
+    helpText:SetText("Tip: Selecting a profile auto-applies it. Use /wowkeyb switch <name> to swap profiles, then move bars in WoW Edit Mode.")
 
     WoWKeyb.optionsPanel = panel
 
@@ -1288,28 +1204,6 @@ local function slashHandler(msg)
         openAddonSettings()
         return
 
-    elseif cmd == "unlock" then
-        WoWKeybDB.customBarsUnlocked = true
-        setCustomBarsMovableEnabled(true)
-        print("|cff00ff00[WoWKeyb]|r Custom bars unlocked. Drag with left mouse.")
-        return
-
-    elseif cmd == "lock" then
-        WoWKeybDB.customBarsUnlocked = false
-        setCustomBarsMovableEnabled(false)
-        print("|cff00ff00[WoWKeyb]|r Custom bars locked.")
-        return
-
-    elseif cmd == "resetbars" then
-        local target = arg ~= "" and arg or WoWKeybDB.currentProfile
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No target profile. Usage: /wowkeyb resetbars <profile name>")
-            return
-        end
-        WoWKeybDB.customBarPositions[target] = nil
-        print("|cff00ff00[WoWKeyb]|r Cleared saved custom bar positions for: " .. tostring(target))
-        return
-
     elseif cmd == "export" or cmd == "e" then
         local target = arg ~= "" and arg or WoWKeybDB.currentProfile
         if not target then
@@ -1333,13 +1227,10 @@ local function slashHandler(msg)
         print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
         print("  /wowkeyb toggle       - Toggle between last two profiles")
         print("  /wowkeyb import <name> - Import profile from JSON (paste in dialog)")
-        print("  /wowkeyb export [name] - Export profile JSON with synced moved bars")
+        print("  /wowkeyb export [name] - Export selected profile JSON")
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb delete <name> - Delete a stored profile")
         print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
-        print("  /wowkeyb unlock       - Unlock current custom bars for drag")
-        print("  /wowkeyb lock         - Lock custom bars after moving")
-        print("  /wowkeyb resetbars [name] - Reset saved custom bar positions")
     end
 end
 
