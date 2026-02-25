@@ -13,11 +13,21 @@ WoWKeybDB = WoWKeybDB or {
     lastApplied = nil,
     currentProfile = nil,   -- Last profile applied (for toggle)
     previousProfile = nil,  -- Profile before current (for toggle)
+    barMode = "blizzard",   -- "blizzard" | "custom"
+    customBarsUnlocked = false, -- custom mode move toggle
+    customBarPositions = {}, -- per-profile bar offsets (x/y from UI center)
 }
 WoWKeybDB.minimap = WoWKeybDB.minimap or {
     hide = false,
     angle = 225,
 }
+if WoWKeybDB.barMode ~= "blizzard" and WoWKeybDB.barMode ~= "custom" then
+    WoWKeybDB.barMode = "blizzard"
+end
+if WoWKeybDB.customBarsUnlocked == nil then
+    WoWKeybDB.customBarsUnlocked = false
+end
+WoWKeybDB.customBarPositions = WoWKeybDB.customBarPositions or {}
 
 -- WoW uses hyphen for modifiers (SHIFT-1), WoWKeyb uses plus (SHIFT+1)
 local function toWoWKeyFormat(key)
@@ -66,6 +76,20 @@ for i = 1, 12 do KEY_TO_LAYOUT_SLOT["ALT-" .. i] = { barIndex = 3, slotIndex = i
 
 -- Frames created by WoWKeyb for custom layout (cleared on each apply)
 local WoWKeybCustomFrames = {}
+local WoWKeybCustomMovers = {}
+
+local function setCustomBarsMovableEnabled(enabled)
+    for _, mover in ipairs(WoWKeybCustomMovers) do
+        if mover and mover.EnableMouse then
+            mover:EnableMouse(enabled)
+            if enabled then
+                mover:Show()
+            else
+                mover:Hide()
+            end
+        end
+    end
+end
 
 local function clearCustomLayoutFrames()
     for _, frame in ipairs(WoWKeybCustomFrames) do
@@ -80,6 +104,7 @@ local function clearCustomLayoutFrames()
         end
     end
     WoWKeybCustomFrames = {}
+    WoWKeybCustomMovers = {}
 end
 
 -- Apply profile using custom layout (SecureActionButton frames at saved positions)
@@ -130,6 +155,10 @@ local function applyProfileWithLayout(profile)
     local baseGap = 4
     local basePadding = 6
 
+    local profileName = tostring(profile.name or "Unknown")
+    WoWKeybDB.customBarPositions[profileName] = WoWKeybDB.customBarPositions[profileName] or {}
+    local profileOverrides = WoWKeybDB.customBarPositions[profileName]
+
     for barIdx, bar in ipairs(layout.bars) do
         local pos = bar.position or {}
         local px = pos.x or (screenW / 2)
@@ -144,6 +173,11 @@ local function applyProfileWithLayout(profile)
         -- Convert design pixels to WoW coords (origin bottom-left)
         local offsetX = math.floor(((px - screenW / 2) * scaleX) + 0.5)
         local offsetY = math.floor(((screenH / 2 - py) * scaleY) + 0.5)
+        local savedPos = bar and bar.id and profileOverrides[bar.id] or nil
+        if savedPos and type(savedPos.x) == "number" and type(savedPos.y) == "number" then
+            offsetX = savedPos.x
+            offsetY = savedPos.y
+        end
 
         local barWidth, barHeight
         if orient == "vertical" then
@@ -159,7 +193,56 @@ local function applyProfileWithLayout(profile)
         container:SetPoint("CENTER", UIParent, "CENTER", offsetX, offsetY)
         container:SetFrameStrata("MEDIUM")
         container:SetFrameLevel(10)
+        container:SetMovable(true)
+        container:SetClampedToScreen(true)
         table.insert(WoWKeybCustomFrames, container)
+
+        local mover = CreateFrame("Frame", nil, container, "BackdropTemplate")
+        mover:SetAllPoints(container)
+        mover:SetFrameStrata("TOOLTIP")
+        mover:SetFrameLevel(container:GetFrameLevel() + 50)
+        if mover.SetBackdrop then
+            mover:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = false,
+                edgeSize = 10,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            })
+            mover:SetBackdropColor(0.1, 0.55, 1, 0.18)
+            mover:SetBackdropBorderColor(0.1, 0.75, 1, 0.9)
+        end
+        mover:RegisterForDrag("LeftButton")
+        mover:SetScript("OnDragStart", function(self)
+            if not WoWKeybDB.customBarsUnlocked then return end
+            if InCombatLockdown() then
+                print("|cffffcc00[WoWKeyb]|r Can't move bars while in combat.")
+                return
+            end
+            local parent = self:GetParent()
+            if parent and parent.StartMoving then
+                parent:StartMoving()
+            end
+        end)
+        mover:SetScript("OnDragStop", function(self)
+            local parent = self:GetParent()
+            if parent and parent.StopMovingOrSizing then
+                parent:StopMovingOrSizing()
+                local _, _, _, xOfs, yOfs = parent:GetPoint(1)
+                if type(xOfs) == "number" and type(yOfs) == "number" and bar and bar.id then
+                    profileOverrides[bar.id] = {
+                        x = math.floor(xOfs + 0.5),
+                        y = math.floor(yOfs + 0.5),
+                    }
+                end
+            end
+        end)
+        local moveText = mover:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        moveText:SetPoint("TOP", mover, "TOP", 0, -3)
+        moveText:SetText("Drag")
+        moveText:SetTextColor(0.85, 0.95, 1, 0.95)
+        table.insert(WoWKeybCustomMovers, mover)
+        table.insert(WoWKeybCustomFrames, mover)
 
         local slots = barKeybinds[bar.id] or {}
 
@@ -236,6 +319,7 @@ local function applyProfileWithLayout(profile)
 
     local bindingSet = GetCurrentBindingSet()
     SaveBindings(bindingSet)
+    setCustomBarsMovableEnabled(WoWKeybDB.customBarsUnlocked == true)
 
     return true, string.format("Applied %d keybindings (custom layout)", applied)
 end
@@ -295,6 +379,46 @@ local function ensureBlizzardBarsVisible()
     if MultiActionBar_UpdateGrid then pcall(MultiActionBar_UpdateGrid) end
 end
 
+local function setDefaultBarsAlpha(alpha)
+    local targets = {
+        _G.MainMenuBar,
+        _G.MainMenuBarArtFrame,
+        _G.MainMenuBarTexture0,
+        _G.MainMenuBarTexture1,
+        _G.MainMenuBarTexture2,
+        _G.MainMenuBarTexture3,
+        _G.MainMenuBarLeftEndCap,
+        _G.MainMenuBarRightEndCap,
+        _G.MultiBarBottomLeft,
+        _G.MultiBarBottomRight,
+        _G.MultiBarRight,
+        _G.MultiBarLeft,
+        _G.PossessBarFrame,
+        _G.StanceBarFrame,
+        _G.PetActionBarFrame,
+    }
+    for _, frame in ipairs(targets) do
+        if frame and frame.SetAlpha then
+            pcall(function() frame:SetAlpha(alpha) end)
+        end
+    end
+end
+
+local function applyBarModeVisibility(useCustomBars)
+    if useCustomBars then
+        pcall(function() SetCVar("showMultiActionBar1", "0") end)
+        pcall(function() SetCVar("showMultiActionBar2", "0") end)
+        pcall(function() SetCVar("showMultiActionBar3", "0") end)
+        pcall(function() SetCVar("showMultiActionBar4", "0") end)
+        pcall(function() SetCVar("alwaysShowActionBars", "0") end)
+        if MultiActionBar_Update then pcall(MultiActionBar_Update) end
+        setDefaultBarsAlpha(0)
+    else
+        ensureBlizzardBarsVisible()
+        setDefaultBarsAlpha(1)
+    end
+end
+
 local function applyProfile(profile)
     if not profile or not profile.keybinds or #profile.keybinds == 0 then
         return false, "No keybinds in profile"
@@ -304,14 +428,29 @@ local function applyProfile(profile)
         return false, "Cannot apply keybindings while in combat"
     end
 
-    -- Always clear any previous custom layout frames; this addon now targets Blizzard bars only.
+    local useCustomBars = WoWKeybDB.barMode == "custom"
+    local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
+    if useCustomBars and hasLayout then
+        applyBarModeVisibility(true)
+        local ok, result = applyProfileWithLayout(profile)
+        if ok then
+            local profileName = profile.name or "Unknown"
+            WoWKeybDB.lastApplied = { name = profileName, applied = 0, skipped = 0, time = time() }
+            if WoWKeybDB.currentProfile ~= profileName then
+                WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
+                WoWKeybDB.currentProfile = profileName
+            end
+        end
+        return ok, result
+    end
+
+    -- Blizzard mode (or fallback when layout is unavailable in custom mode).
     clearCustomLayoutFrames()
-    ensureBlizzardBarsVisible()
+    applyBarModeVisibility(false)
 
     local PickupSpell = C_Spell and C_Spell.PickupSpell or _G.PickupSpell
     local GetSpellInfo = C_Spell and C_Spell.GetSpellName or _G.GetSpellInfo
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
-    local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
 
     -- Group by key (WoW allows one binding per key; use first spell if multiple)
     local keyToData = {}
@@ -475,6 +614,198 @@ local function listStoredProfiles()
     return list
 end
 
+local function jsonEscape(str)
+    str = tostring(str or "")
+    str = str:gsub("\\", "\\\\")
+    str = str:gsub('"', '\\"')
+    str = str:gsub("\n", "\\n")
+    str = str:gsub("\r", "\\r")
+    str = str:gsub("\t", "\\t")
+    return str
+end
+
+local function toJSONArray(items)
+    return "[" .. table.concat(items, ",") .. "]"
+end
+
+local function serializeSyncedProfile(profileName, profile)
+    if not profile then
+        return nil, "Profile not found"
+    end
+
+    local pName = tostring(profile.name or profileName or "ImportedProfile")
+    local keybindChunks = {}
+    local keybinds = profile.keybinds or {}
+    for _, kb in ipairs(keybinds) do
+        local spell = kb.spell or {}
+        local spellId = tostring(spell.spellId or spell.spell_id or "")
+        local key = tostring(kb.key or "")
+        local spellJson = table.concat({
+            '{"spellId":"', jsonEscape(spellId),
+            '","name":"', jsonEscape(spell.name or ""),
+            '","icon":"', jsonEscape(spell.icon or ""),
+            '","description":"', jsonEscape(spell.description or ""),
+            '"}'
+        })
+        local kbJson = table.concat({
+            '{"key":"', jsonEscape(key),
+            '","spell":', spellJson,
+            ',"barId":"', jsonEscape(kb.barId or kb.bar_id or ""),
+            '","slotIndex":', tostring(tonumber(kb.slotIndex or kb.slot_index) or 0),
+            '}'
+        })
+        table.insert(keybindChunks, kbJson)
+    end
+
+    local layout = profile.layout or {}
+    local bars = layout.bars or {}
+    local layoutChunks = {}
+    local screenW = tonumber(layout.screenWidth) or 2560
+    local screenH = tonumber(layout.screenHeight) or 1440
+    local wowW = GetScreenWidth()
+    local wowH = GetScreenHeight()
+    local scaleX = wowW / screenW
+    local scaleY = wowH / screenH
+    local profileOverrides = WoWKeybDB.customBarPositions[tostring(profileName)] or {}
+
+    for _, bar in ipairs(bars) do
+        local pos = bar.position or {}
+        local px = tonumber(pos.x) or (screenW / 2)
+        local py = tonumber(pos.y) or (screenH / 2)
+
+        local override = profileOverrides[bar.id]
+        if override and type(override.x) == "number" and type(override.y) == "number" then
+            px = (override.x / scaleX) + (screenW / 2)
+            py = (screenH / 2) - (override.y / scaleY)
+        end
+
+        local slotKeys = {}
+        for _, key in ipairs(bar.slotKeys or {}) do
+            table.insert(slotKeys, '"' .. jsonEscape(key or "") .. '"')
+        end
+
+        local barJson = table.concat({
+            '{"id":"', jsonEscape(bar.id or ""),
+            '","slots":', tostring(tonumber(bar.slots) or 12),
+            ',"slotKeys":', toJSONArray(slotKeys),
+            ',"position":{"anchor":"', jsonEscape((pos.anchor or "center")),
+            '","x":', tostring(math.floor(px + 0.5)),
+            ',"y":', tostring(math.floor(py + 0.5)),
+            '},"orientation":"', jsonEscape(bar.orientation or "horizontal"),
+            '","scale":', tostring(tonumber(bar.scale) or 1),
+            '}'
+        })
+        table.insert(layoutChunks, barJson)
+    end
+
+    local layoutJson = table.concat({
+        '{"bars":', toJSONArray(layoutChunks),
+        ',"barMode":"', jsonEscape(layout.barMode or WoWKeybDB.barMode or "custom"),
+        '","screenWidth":', tostring(screenW),
+        ',"screenHeight":', tostring(screenH),
+        ',"barGap":', tostring(tonumber(layout.barGap) or 16),
+        '}'
+    })
+
+    local profileJson = table.concat({
+        '{"name":"', jsonEscape(pName),
+        '","keybinds":', toJSONArray(keybindChunks),
+        ',"layout":', layoutJson,
+        '}'
+    })
+    return profileJson
+end
+
+local exportFrame
+function WoWKeyb:ShowExportDialog(profileName)
+    local profile = getStoredProfile(profileName)
+    if not profile then
+        print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(profileName))
+        return
+    end
+
+    local json, err = serializeSyncedProfile(profileName, profile)
+    if not json then
+        print("|cffff0000[WoWKeyb]|r Failed to build export JSON: " .. tostring(err or "unknown error"))
+        return
+    end
+
+    if exportFrame and exportFrame:IsShown() then
+        exportFrame:Hide()
+    end
+
+    if not exportFrame then
+        exportFrame = CreateFrame("Frame", "WoWKeybExportFrame", UIParent, "BackdropTemplate")
+        exportFrame:SetSize(560, 420)
+        exportFrame:SetPoint("CENTER")
+        exportFrame:SetFrameStrata("DIALOG")
+        exportFrame:SetFrameLevel(110)
+        if exportFrame.SetBackdrop then
+            exportFrame:SetBackdrop({
+                bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+                tile = true, tileSize = 32, edgeSize = 32,
+                insets = { left = 11, right = 12, top = 12, bottom = 11 }
+            })
+        end
+        exportFrame:SetMovable(true)
+        exportFrame:EnableMouse(true)
+        exportFrame:RegisterForDrag("LeftButton")
+        exportFrame:SetScript("OnDragStart", function() exportFrame:StartMoving() end)
+        exportFrame:SetScript("OnDragStop", function() exportFrame:StopMovingOrSizing() end)
+
+        local title = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOP", 0, -20)
+        title:SetText("WoWKeyb - Export Synced Profile JSON")
+
+        local subtitle = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        subtitle:SetPoint("TOP", title, "BOTTOM", 0, -6)
+        subtitle:SetText("Includes moved custom bar positions. Copy and paste into web app import.")
+
+        local scroll = CreateFrame("ScrollFrame", "WoWKeybExportScroll", exportFrame, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 20, -62)
+        scroll:SetPoint("BOTTOMRIGHT", -40, 60)
+
+        local edit = CreateFrame("EditBox", "WoWKeybExportEdit", scroll)
+        edit:SetSize(480, 320)
+        edit:SetMultiLine(true)
+        edit:SetAutoFocus(false)
+        edit:EnableKeyboard(true)
+        edit:EnableMouse(true)
+        edit:SetMaxLetters(0)
+        edit:SetFontObject("GameFontHighlightSmall")
+        edit:SetTextInsets(6, 6, 6, 6)
+        edit:SetScript("OnEscapePressed", function() exportFrame:Hide() end)
+        edit:SetScript("OnEnterPressed", function(self)
+            self:Insert("\n")
+        end)
+        scroll:SetScrollChild(edit)
+        exportFrame.editBox = edit
+
+        local selectBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
+        selectBtn:SetSize(150, 22)
+        selectBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", 90, 20)
+        selectBtn:SetText("Select All")
+        selectBtn:SetScript("OnClick", function()
+            if exportFrame.editBox then
+                exportFrame.editBox:SetFocus()
+                exportFrame.editBox:HighlightText()
+            end
+        end)
+
+        local closeBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
+        closeBtn:SetSize(120, 22)
+        closeBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", -90, 20)
+        closeBtn:SetText("Close")
+        closeBtn:SetScript("OnClick", function() exportFrame:Hide() end)
+    end
+
+    exportFrame:Show()
+    WoWKeybExportEdit:SetText(json)
+    WoWKeybExportEdit:SetFocus()
+    WoWKeybExportEdit:HighlightText()
+end
+
 local function openAddonSettings()
     if Settings and Settings.OpenToCategory and WoWKeyb.settingsCategoryID then
         Settings.OpenToCategory(WoWKeyb.settingsCategoryID)
@@ -511,8 +842,86 @@ local function createSettingsPanel()
     panel.refreshCurrentProfileText = refreshCurrentProfileText
     refreshCurrentProfileText()
 
+    local modeLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    modeLabel:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
+    modeLabel:SetText("Action bar mode:")
+
+    local modeDropdown = CreateFrame("Frame", "WoWKeybModeDropdown", panel, "UIDropDownMenuTemplate")
+    modeDropdown:SetPoint("TOPLEFT", modeLabel, "BOTTOMLEFT", -16, -4)
+    UIDropDownMenu_SetWidth(modeDropdown, 220)
+
+    local function getModeLabel(mode)
+        if mode == "custom" then return "WoWKeyb Custom Bars" end
+        return "Blizzard Bars"
+    end
+
+    local function refreshModeSelector()
+        UIDropDownMenu_Initialize(modeDropdown, function(self, level)
+            local blizzInfo = UIDropDownMenu_CreateInfo()
+            blizzInfo.text = "Blizzard Bars"
+            blizzInfo.checked = (WoWKeybDB.barMode ~= "custom")
+            blizzInfo.func = function()
+                WoWKeybDB.barMode = "blizzard"
+                UIDropDownMenu_SetText(modeDropdown, getModeLabel(WoWKeybDB.barMode))
+                if not InCombatLockdown() then
+                    applyBarModeVisibility(false)
+                else
+                    print("|cffffcc00[WoWKeyb]|r Bar visibility will update after combat.")
+                end
+                print("|cff00ff00[WoWKeyb]|r Action bar mode set to Blizzard Bars.")
+            end
+            UIDropDownMenu_AddButton(blizzInfo, level)
+
+            local customInfo = UIDropDownMenu_CreateInfo()
+            customInfo.text = "WoWKeyb Custom Bars"
+            customInfo.checked = (WoWKeybDB.barMode == "custom")
+            customInfo.func = function()
+                WoWKeybDB.barMode = "custom"
+                UIDropDownMenu_SetText(modeDropdown, getModeLabel(WoWKeybDB.barMode))
+                if not InCombatLockdown() then
+                    applyBarModeVisibility(true)
+                else
+                    print("|cffffcc00[WoWKeyb]|r Bar visibility will update after combat.")
+                end
+                print("|cff00ff00[WoWKeyb]|r Action bar mode set to WoWKeyb Custom Bars.")
+            end
+            UIDropDownMenu_AddButton(customInfo, level)
+        end)
+        UIDropDownMenu_SetText(modeDropdown, getModeLabel(WoWKeybDB.barMode))
+    end
+    panel.refreshModeSelector = refreshModeSelector
+    refreshModeSelector()
+
+    local moveBarsBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    moveBarsBtn:SetSize(220, 24)
+    moveBarsBtn:SetPoint("TOPLEFT", modeDropdown, "BOTTOMLEFT", 16, -8)
+    local function refreshMoveBarsButton()
+        if WoWKeybDB.customBarsUnlocked then
+            moveBarsBtn:SetText("Lock Custom Bars")
+        else
+            moveBarsBtn:SetText("Unlock + Move Custom Bars")
+        end
+    end
+    moveBarsBtn:SetScript("OnClick", function()
+        WoWKeybDB.customBarsUnlocked = not WoWKeybDB.customBarsUnlocked
+        setCustomBarsMovableEnabled(WoWKeybDB.customBarsUnlocked == true)
+        refreshMoveBarsButton()
+        if WoWKeybDB.customBarsUnlocked then
+            print("|cff00ff00[WoWKeyb]|r Custom bars unlocked. Drag bars with left mouse.")
+        else
+            print("|cff00ff00[WoWKeyb]|r Custom bars locked.")
+        end
+    end)
+    refreshMoveBarsButton()
+
+    local moveHelpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    moveHelpText:SetPoint("TOPLEFT", moveBarsBtn, "BOTTOMLEFT", 0, -6)
+    moveHelpText:SetWidth(520)
+    moveHelpText:SetJustifyH("LEFT")
+    moveHelpText:SetText("Tip: In WoWKeyb Custom Bars mode, unlock to drag bars in-game. Positions are saved per profile.")
+
     local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    profileLabel:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
+    profileLabel:SetPoint("TOPLEFT", moveHelpText, "BOTTOMLEFT", 0, -14)
     profileLabel:SetText("Selected profile:")
 
     local profileDropdown = CreateFrame("Frame", "WoWKeybProfileDropdown", panel, "UIDropDownMenuTemplate")
@@ -567,9 +976,22 @@ local function createSettingsPanel()
         WoWKeyb:ShowImportDialog("ImportedProfile")
     end)
 
+    local exportBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    exportBtn:SetSize(180, 24)
+    exportBtn:SetPoint("TOPLEFT", importBtn, "BOTTOMLEFT", 0, -8)
+    exportBtn:SetText("Export Selected Profile")
+    exportBtn:SetScript("OnClick", function()
+        local target = selectedProfileName or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile to export.")
+            return
+        end
+        WoWKeyb:ShowExportDialog(target)
+    end)
+
     local listBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     listBtn:SetSize(180, 24)
-    listBtn:SetPoint("TOPLEFT", importBtn, "BOTTOMLEFT", 0, -8)
+    listBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
     listBtn:SetText("List Profiles")
     listBtn:SetScript("OnClick", function()
         local list = listStoredProfiles()
@@ -609,8 +1031,7 @@ local function createSettingsPanel()
     deleteBtn:SetSize(180, 24)
     deleteBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Selected Profile")
-    deleteBtn:SetScript("OnClick", function()
-        local target = selectedProfileName
+    local function deleteProfileByName(target)
         if not target then
             print("|cffff0000[WoWKeyb]|r No selected profile.")
             return
@@ -645,6 +1066,30 @@ local function createSettingsPanel()
 
         refreshProfileSelector()
         refreshCurrentProfileText()
+    end
+
+    if not StaticPopupDialogs["WOWKEYB_DELETE_PROFILE_CONFIRM"] then
+        StaticPopupDialogs["WOWKEYB_DELETE_PROFILE_CONFIRM"] = {
+            text = "Delete selected WoWKeyb profile \"%s\"?",
+            button1 = "Delete",
+            button2 = "Cancel",
+            OnAccept = function(_, data)
+                deleteProfileByName(data)
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+
+    deleteBtn:SetScript("OnClick", function()
+        local target = selectedProfileName
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile.")
+            return
+        end
+        StaticPopup_Show("WOWKEYB_DELETE_PROFILE_CONFIRM", target, nil, target)
     end)
 
     local helpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
@@ -861,15 +1306,54 @@ local function slashHandler(msg)
         openAddonSettings()
         return
 
+    elseif cmd == "unlock" then
+        WoWKeybDB.customBarsUnlocked = true
+        setCustomBarsMovableEnabled(true)
+        print("|cff00ff00[WoWKeyb]|r Custom bars unlocked. Drag with left mouse.")
+        return
+
+    elseif cmd == "lock" then
+        WoWKeybDB.customBarsUnlocked = false
+        setCustomBarsMovableEnabled(false)
+        print("|cff00ff00[WoWKeyb]|r Custom bars locked.")
+        return
+
+    elseif cmd == "resetbars" then
+        local target = arg ~= "" and arg or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No target profile. Usage: /wowkeyb resetbars <profile name>")
+            return
+        end
+        WoWKeybDB.customBarPositions[target] = nil
+        print("|cff00ff00[WoWKeyb]|r Cleared saved custom bar positions for: " .. tostring(target))
+        return
+
+    elseif cmd == "export" or cmd == "e" then
+        local target = arg ~= "" and arg or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No target profile. Usage: /wowkeyb export <profile name>")
+            return
+        end
+        if not getStoredProfile(target) then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+            return
+        end
+        WoWKeyb:ShowExportDialog(target)
+        return
+
     else
         print("|cff00ff00[WoWKeyb]|r Commands:")
         print("  /wowkeyb apply <name>  - Apply a stored profile")
         print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
         print("  /wowkeyb toggle       - Toggle between last two profiles")
         print("  /wowkeyb import <name> - Import profile from JSON (paste in dialog)")
+        print("  /wowkeyb export [name] - Export profile JSON with synced moved bars")
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb delete <name> - Delete a stored profile")
         print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
+        print("  /wowkeyb unlock       - Unlock current custom bars for drag")
+        print("  /wowkeyb lock         - Lock custom bars after moving")
+        print("  /wowkeyb resetbars [name] - Reset saved custom bar positions")
     end
 end
 
