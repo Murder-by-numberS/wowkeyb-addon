@@ -7,6 +7,7 @@
 local addonName, WoWKeyb = ...
 WoWKeyb.addonName = addonName
 local BLIZZARD_DEFAULT_PROFILE = "Blizzard Default"
+local MINIMAP_LDB_NAME = "WoWKeyb"
 
 -- Default saved variables
 local function ensureDBDefaults()
@@ -27,7 +28,10 @@ local function ensureDBDefaults()
         WoWKeybDB.minimap = {}
     end
     if WoWKeybDB.minimap.hide == nil then WoWKeybDB.minimap.hide = false end
-    if WoWKeybDB.minimap.angle == nil then WoWKeybDB.minimap.angle = 225 end
+    if WoWKeybDB.minimap.minimapPos == nil then
+        WoWKeybDB.minimap.minimapPos = tonumber(WoWKeybDB.minimap.angle) or 225
+    end
+    WoWKeybDB.minimap.angle = nil
 end
 
 ensureDBDefaults()
@@ -1056,108 +1060,52 @@ local function createSettingsPanel()
     end
 end
 
-local function updateMinimapButtonPosition()
-    if not WoWKeyb.minimapButton then return end
-    local angle = WoWKeybDB.minimap and WoWKeybDB.minimap.angle or 225
-    local radians = math.rad(angle)
-    -- Keep the button around the minimap's outside edge.
-    local radius = 96
-    local x = math.cos(radians) * radius
-    local y = math.sin(radians) * radius
-    WoWKeyb.minimapButton:ClearAllPoints()
-    WoWKeyb.minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
-end
-
-local function safeAtan2(y, x)
-    if math.atan2 then
-        return math.atan2(y, x)
-    end
-    if x > 0 then return math.atan(y / x) end
-    if x < 0 and y >= 0 then return math.atan(y / x) + math.pi end
-    if x < 0 and y < 0 then return math.atan(y / x) - math.pi end
-    if x == 0 and y > 0 then return math.pi / 2 end
-    if x == 0 and y < 0 then return -math.pi / 2 end
-    return 0
-end
-
 local function createMinimapButton()
-    if WoWKeyb.minimapButton or not Minimap then return end
+    ensureDBDefaults()
 
-    local btn = CreateFrame("Button", "WoWKeybMinimapButton", MinimapCluster or Minimap)
-    btn:SetSize(31, 31)
-    btn:SetFrameStrata("HIGH")
-    btn:SetFrameLevel(8)
-    btn:SetMovable(true)
-    btn:EnableMouse(true)
-    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    btn:RegisterForDrag("RightButton")
-
-    local bg = btn:CreateTexture(nil, "BACKGROUND")
-    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-    bg:SetPoint("CENTER", 0, 0)
-    bg:SetSize(20, 20)
-    btn.bg = bg
-
-    local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(20, 20)
-    icon:SetPoint("CENTER", 0, 0)
-    icon:SetTexture("Interface\\AddOns\\WoWKeyb\\media\\wowkeyb")
-    icon:SetTexCoord(0.02, 0.98, 0.02, 0.98)
-    -- Retail-safe circular mask; keeps square logos inside the minimap ring.
-    if icon.SetMask then
-        icon:SetMask("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
+    local libStub = _G.LibStub
+    if not libStub then
+        print("|cffff0000[WoWKeyb]|r LibStub missing; minimap icon disabled.")
+        return
     end
-    btn.icon = icon
 
-    local overlay = btn:CreateTexture(nil, "OVERLAY")
-    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    overlay:SetSize(53, 53)
-    overlay:SetPoint("CENTER", 0, 0)
-    btn.overlay = overlay
+    local ldb = libStub("LibDataBroker-1.1", true)
+    local iconLib = libStub("LibDBIcon-1.0", true)
+    if not ldb or not iconLib then
+        print("|cffff0000[WoWKeyb]|r LibDBIcon dependencies missing; minimap icon disabled.")
+        return
+    end
 
-    btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("WoWKeyb")
-        GameTooltip:AddLine("Left-click: Open settings", 0.8, 0.8, 0.8)
-        GameTooltip:AddLine("Right-drag: Move icon", 0.8, 0.8, 0.8)
-        GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
+    -- Register LDB launcher once; refresh on subsequent initializations.
+    if not WoWKeyb.ldbObject then
+        WoWKeyb.ldbObject = ldb:NewDataObject(MINIMAP_LDB_NAME, {
+            type = "launcher",
+            icon = "Interface\\AddOns\\WoWKeyb\\media\\wowkeyb",
+            iconCoords = { 0.02, 0.98, 0.02, 0.98 },
+            OnClick = function(_, mouseButton)
+                if mouseButton == "LeftButton" then
+                    openAddonSettings()
+                end
+            end,
+            OnTooltipShow = function(tooltip)
+                tooltip:AddLine("WoWKeyb")
+                tooltip:AddLine("Left-click: Open settings", 0.8, 0.8, 0.8)
+                tooltip:AddLine("Drag: Move icon", 0.8, 0.8, 0.8)
+            end,
+        })
+    end
 
-    btn:SetScript("OnClick", function(_, mouseButton)
-        if mouseButton == "LeftButton" then
-            openAddonSettings()
-        end
-    end)
-
-    btn:SetScript("OnDragStart", function(self)
-        self.isDragging = true
-        self:SetScript("OnUpdate", function()
-            local mx, my = Minimap:GetCenter()
-            local px, py = GetCursorPosition()
-            local scale = UIParent:GetScale()
-            px = px / scale
-            py = py / scale
-            local angle = math.deg(safeAtan2(py - my, px - mx))
-            if angle < 0 then angle = angle + 360 end
-            WoWKeybDB.minimap.angle = angle
-            updateMinimapButtonPosition()
-        end)
-    end)
-    btn:SetScript("OnDragStop", function(self)
-        self.isDragging = false
-        self:SetScript("OnUpdate", nil)
-    end)
-
-    WoWKeyb.minimapButton = btn
-    updateMinimapButtonPosition()
-
-    if WoWKeybDB.minimap and WoWKeybDB.minimap.hide then
-        btn:Hide()
+    if not iconLib:IsRegistered(MINIMAP_LDB_NAME) then
+        iconLib:Register(MINIMAP_LDB_NAME, WoWKeyb.ldbObject, WoWKeybDB.minimap)
     else
-        btn:Show()
+        iconLib:Refresh(MINIMAP_LDB_NAME, WoWKeybDB.minimap)
+    end
+
+    WoWKeyb.minimapIconLib = iconLib
+    if WoWKeybDB.minimap.hide then
+        iconLib:Hide(MINIMAP_LDB_NAME)
+    else
+        iconLib:Show(MINIMAP_LDB_NAME)
     end
 end
 
