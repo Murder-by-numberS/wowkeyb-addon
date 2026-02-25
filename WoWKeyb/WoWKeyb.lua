@@ -402,7 +402,27 @@ local function setDefaultBarsAlpha(alpha)
         _G.PossessBarFrame,
         _G.StanceBarFrame,
         _G.PetActionBarFrame,
+        _G.OverrideActionBar,
+        _G.ZoneAbilityFrame,
+        _G.ExtraActionBarFrame,
+        _G.StatusTrackingBarManager,
     }
+
+    -- Include action buttons directly so visibility is forced even when parent
+    -- frame alpha handling differs by client/UI state.
+    for i = 1, 12 do
+        local btn = _G["ActionButton" .. i]
+        if btn then table.insert(targets, btn) end
+        local mb1 = _G["MultiBarBottomLeftButton" .. i]
+        if mb1 then table.insert(targets, mb1) end
+        local mb2 = _G["MultiBarBottomRightButton" .. i]
+        if mb2 then table.insert(targets, mb2) end
+        local mb3 = _G["MultiBarRightButton" .. i]
+        if mb3 then table.insert(targets, mb3) end
+        local mb4 = _G["MultiBarLeftButton" .. i]
+        if mb4 then table.insert(targets, mb4) end
+    end
+
     for _, frame in ipairs(targets) do
         if frame and frame.SetAlpha then
             pcall(function() frame:SetAlpha(alpha) end)
@@ -494,6 +514,9 @@ applyProfile = function(profile)
                 WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
                 WoWKeybDB.currentProfile = profileName
             end
+        end
+        if ok then
+            return true, result .. " [mode: custom]"
         end
         return ok, result
     end
@@ -599,7 +622,7 @@ applyProfile = function(profile)
         WoWKeybDB.currentProfile = profileName
     end
 
-    return true, string.format("Applied %d keybindings (%d skipped)", applied, skipped)
+    return true, string.format("Applied %d keybindings (%d skipped) [mode: blizzard]", applied, skipped)
 end
 
 -- Toggle between current and previous profile
@@ -896,14 +919,34 @@ local function createSettingsPanel()
     local moveBarsBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     moveBarsBtn:SetSize(220, 24)
     moveBarsBtn:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
+    local function isSelectedProfileCustom()
+        local target = selectedProfileName or WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            return false
+        end
+        local profile = getStoredProfile(target)
+        if not profile then
+            return false
+        end
+        return getProfileBarMode(profile) == "custom"
+    end
     local function refreshMoveBarsButton()
-        if WoWKeybDB.customBarsUnlocked then
-            moveBarsBtn:SetText("Lock Custom Bars")
+        if isSelectedProfileCustom() then
+            moveBarsBtn:Enable()
+            if WoWKeybDB.customBarsUnlocked then
+                moveBarsBtn:SetText("Lock Custom Bars")
+            else
+                moveBarsBtn:SetText("Unlock + Move Custom Bars")
+            end
         else
-            moveBarsBtn:SetText("Unlock + Move Custom Bars")
+            moveBarsBtn:Disable()
+            moveBarsBtn:SetText("Custom Bars Disabled")
         end
     end
     moveBarsBtn:SetScript("OnClick", function()
+        if not isSelectedProfileCustom() then
+            return
+        end
         WoWKeybDB.customBarsUnlocked = not WoWKeybDB.customBarsUnlocked
         setCustomBarsMovableEnabled(WoWKeybDB.customBarsUnlocked == true)
         refreshMoveBarsButton()
@@ -919,7 +962,7 @@ local function createSettingsPanel()
     moveHelpText:SetPoint("TOPLEFT", moveBarsBtn, "BOTTOMLEFT", 0, -6)
     moveHelpText:SetWidth(520)
     moveHelpText:SetJustifyH("LEFT")
-    moveHelpText:SetText("Tip: Mode comes from the selected profile. Unlock to drag custom bars in-game. Positions are saved per profile.")
+    moveHelpText:SetText("Tip: This control is available only for custom-bar profiles. Blizzard Default keeps Blizzard bars active.")
 
     local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     profileLabel:SetPoint("TOPLEFT", moveHelpText, "BOTTOMLEFT", 0, -14)
@@ -966,11 +1009,13 @@ local function createSettingsPanel()
                         print("|cffff0000[WoWKeyb]|r " .. tostring(result or "Failed to apply"))
                     end
                     refreshCurrentProfileText()
+                    refreshMoveBarsButton()
                 end
                 UIDropDownMenu_AddButton(info, level)
             end
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
+        refreshMoveBarsButton()
     end
     panel.refreshProfileSelector = refreshProfileSelector
     refreshProfileSelector()
@@ -1000,22 +1045,9 @@ local function createSettingsPanel()
         WoWKeyb:ShowExportDialog(target)
     end)
 
-    local listBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    listBtn:SetSize(180, 24)
-    listBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
-    listBtn:SetText("List Profiles")
-    listBtn:SetScript("OnClick", function()
-        local list = listStoredProfiles()
-        if #list == 0 then
-            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
-        else
-            print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
-        end
-    end)
-
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", listBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Selected Profile")
     local function deleteProfileByName(target)
         if not target then
@@ -1083,7 +1115,7 @@ local function createSettingsPanel()
     helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
     helpText:SetWidth(520)
     helpText:SetJustifyH("LEFT")
-    helpText:SetText("Tip: Selecting a profile auto-applies it. You can also use slash commands: /wowkeyb import <name>, /wowkeyb switch <name>, /wowkeyb list, /wowkeyb delete <name>")
+    helpText:SetText("Tip: Selecting a profile auto-applies it. You can also use slash commands: /wowkeyb import <name>, /wowkeyb switch <name>, /wowkeyb delete <name>")
 
     WoWKeyb.optionsPanel = panel
 
