@@ -241,7 +241,55 @@ local function applyProfileWithLayout(profile)
 end
 
 -- Convert WoWKeyb profile to WoW action bars + keybindings
--- Uses custom layout (SecureActionButton) if profile has layout, else default WoW UI
+-- Applies to Blizzard's existing action bars only (no custom frame creation).
+local function buildLayoutBarIndexById(profile)
+    local byId = {}
+    if profile and profile.layout and profile.layout.bars then
+        for idx, bar in ipairs(profile.layout.bars) do
+            if bar and bar.id then
+                byId[bar.id] = idx - 1 -- zero-based bar index to match slot math
+            end
+        end
+    end
+    return byId
+end
+
+local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
+    -- 1) Explicit barId + slotIndex from web app
+    if keybind and keybind.barId and (keybind.slotIndex or keybind.slot_index) ~= nil then
+        local barIdx = layoutBarIndexById[keybind.barId]
+        local slotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
+        if barIdx ~= nil and slotIdx and slotIdx >= 0 and slotIdx <= 11 then
+            local slot = (barIdx * 12) + slotIdx + 1
+            if slot >= 1 and slot <= 60 then
+                return slot
+            end
+        end
+    end
+
+    -- 2) Fallback for legacy payloads: infer bar+slot by key grouping
+    local layoutMap = KEY_TO_LAYOUT_SLOT[wowKey]
+    if profile and profile.layout and profile.layout.bars and layoutMap and profile.layout.bars[layoutMap.barIndex + 1] then
+        local slot = (layoutMap.barIndex * 12) + layoutMap.slotIndex + 1
+        if slot >= 1 and slot <= 60 then
+            return slot
+        end
+    end
+
+    -- 3) Default direct key mapping
+    return KEY_TO_SLOT[wowKey]
+end
+
+local function ensureBlizzardBarsVisible()
+    pcall(function() SetCVar("alwaysShowActionBars", "1") end)
+    pcall(function() SetCVar("showMultiActionBar1", "1") end)
+    pcall(function() SetCVar("showMultiActionBar2", "1") end)
+    pcall(function() SetCVar("showMultiActionBar3", "1") end)
+    pcall(function() SetCVar("showMultiActionBar4", "1") end)
+    if MultiActionBar_Update then pcall(MultiActionBar_Update) end
+    if MultiActionBar_UpdateGrid then pcall(MultiActionBar_UpdateGrid) end
+end
+
 local function applyProfile(profile)
     if not profile or not profile.keybinds or #profile.keybinds == 0 then
         return false, "No keybinds in profile"
@@ -251,33 +299,24 @@ local function applyProfile(profile)
         return false, "Cannot apply keybindings while in combat"
     end
 
-    -- Use custom layout when profile has layout with bars
-    if profile.layout and profile.layout.bars and #profile.layout.bars > 0 then
-        local ok, result = applyProfileWithLayout(profile)
-        if ok then
-            local profileName = profile.name or "Unknown"
-            WoWKeybDB.lastApplied = { name = profileName, applied = 0, skipped = 0, time = time() }
-            if WoWKeybDB.currentProfile ~= profileName then
-                WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-                WoWKeybDB.currentProfile = profileName
-            end
-        end
-        return ok, result
-    end
-
-    -- Default mode: clear any previous custom layout frames
+    -- Always clear any previous custom layout frames; this addon now targets Blizzard bars only.
     clearCustomLayoutFrames()
+    ensureBlizzardBarsVisible()
 
     local PickupSpell = C_Spell and C_Spell.PickupSpell or _G.PickupSpell
     local GetSpellInfo = C_Spell and C_Spell.GetSpellName or _G.GetSpellInfo
+    local layoutBarIndexById = buildLayoutBarIndexById(profile)
 
     -- Group by key (WoW allows one binding per key; use first spell if multiple)
-    local keyToSpell = {}
+    local keyToData = {}
     for _, keybind in ipairs(profile.keybinds) do
         if keybind.key and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
             local nk = normalizeKey(keybind.key)
-            if not keyToSpell[nk] then
-                keyToSpell[nk] = keybind.spell
+            if not keyToData[nk] then
+                keyToData[nk] = {
+                    spell = keybind.spell,
+                    preferredSlot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById),
+                }
             end
         end
     end
@@ -285,13 +324,13 @@ local function applyProfile(profile)
     -- Assign slots for keys not in KEY_TO_SLOT (letters, etc.)
     -- Sort keys for deterministic slot assignment
     local sortedKeys = {}
-    for k in pairs(keyToSpell) do sortedKeys[#sortedKeys + 1] = k end
+    for k in pairs(keyToData) do sortedKeys[#sortedKeys + 1] = k end
     table.sort(sortedKeys)
 
     local nextExtraSlot = 49
     local keyToSlotMap = {}
     for _, wowKey in ipairs(sortedKeys) do
-        local slot = KEY_TO_SLOT[wowKey]
+        local slot = keyToData[wowKey].preferredSlot
         if not slot and nextExtraSlot <= 60 then
             slot = nextExtraSlot
             nextExtraSlot = nextExtraSlot + 1
@@ -303,7 +342,7 @@ local function applyProfile(profile)
     local skipped = 0
 
     for _, wowKey in ipairs(sortedKeys) do
-        local spell = keyToSpell[wowKey]
+        local spell = keyToData[wowKey].spell
         local slot = keyToSlotMap[wowKey]
         if not slot then
             skipped = skipped + 1
@@ -510,11 +549,45 @@ local function createSettingsPanel()
         refreshCurrentProfileText()
     end)
 
+    local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    deleteBtn:SetSize(180, 24)
+    deleteBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetText("Delete Current Profile")
+    deleteBtn:SetScript("OnClick", function()
+        local current = WoWKeybDB.currentProfile
+        if not current then
+            print("|cffff0000[WoWKeyb]|r No current profile selected.")
+            return
+        end
+        if not WoWKeybDB.profiles[current] then
+            print("|cffff0000[WoWKeyb]|r Current profile not found: " .. tostring(current))
+            WoWKeybDB.currentProfile = nil
+            refreshCurrentProfileText()
+            return
+        end
+
+        WoWKeybDB.profiles[current] = nil
+        print("|cff00ff00[WoWKeyb]|r Deleted profile: " .. tostring(current))
+
+        if WoWKeybDB.previousProfile and WoWKeybDB.profiles[WoWKeybDB.previousProfile] then
+            WoWKeybDB.currentProfile = WoWKeybDB.previousProfile
+            WoWKeybDB.previousProfile = nil
+        else
+            WoWKeybDB.currentProfile = nil
+            for name, _ in pairs(WoWKeybDB.profiles) do
+                WoWKeybDB.currentProfile = name
+                break
+            end
+        end
+
+        refreshCurrentProfileText()
+    end)
+
     local helpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    helpText:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -14)
+    helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
     helpText:SetWidth(520)
     helpText:SetJustifyH("LEFT")
-    helpText:SetText("Tip: You can also use slash commands: /wowkeyb import <name>, /wowkeyb apply <name>, /wowkeyb list")
+    helpText:SetText("Tip: You can also use slash commands: /wowkeyb import <name>, /wowkeyb apply <name>, /wowkeyb list, /wowkeyb delete <name>")
 
     WoWKeyb.optionsPanel = panel
 
