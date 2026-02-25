@@ -698,17 +698,19 @@ function WoWKeyb:ShowImportDialog(profileName)
     end
 
     if not importFrame then
-        importFrame = CreateFrame("Frame", "WoWKeybImportFrame", UIParent)
+        importFrame = CreateFrame("Frame", "WoWKeybImportFrame", UIParent, "BackdropTemplate")
         importFrame:SetSize(500, 400)
         importFrame:SetPoint("CENTER")
         importFrame:SetFrameStrata("DIALOG")
         importFrame:SetFrameLevel(100)
-        importFrame:SetBackdrop({
-            bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-            edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-            tile = true, tileSize = 32, edgeSize = 32,
-            insets = { left = 11, right = 12, top = 12, bottom = 11 }
-        })
+        if importFrame.SetBackdrop then
+            importFrame:SetBackdrop({
+                bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+                tile = true, tileSize = 32, edgeSize = 32,
+                insets = { left = 11, right = 12, top = 12, bottom = 11 }
+            })
+        end
         importFrame:SetMovable(true)
         importFrame:EnableMouse(true)
         importFrame:RegisterForDrag("LeftButton")
