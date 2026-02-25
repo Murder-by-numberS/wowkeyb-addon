@@ -717,6 +717,11 @@ function WoWKeyb:ShowImportDialog(profileName)
         importFrame:SetMovable(true)
         importFrame:EnableMouse(true)
         importFrame:RegisterForDrag("LeftButton")
+        importFrame:SetScript("OnMouseDown", function()
+            if importFrame.editBox then
+                importFrame.editBox:SetFocus()
+            end
+        end)
 
         local title = importFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         title:SetPoint("TOP", 0, -20)
@@ -750,6 +755,7 @@ function WoWKeyb:ShowImportDialog(profileName)
             end
         end)
         scroll:SetScrollChild(edit)
+        importFrame.editBox = edit
 
         local closeBtn = CreateFrame("Button", nil, importFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
@@ -798,6 +804,7 @@ function WoWKeyb:ParseWoWKeybJSON(str)
 
     -- Try to decode using a minimal approach
     local pos = 1
+    local parseValue, parseObject, parseArray
     local function skipWhitespace()
         while pos <= #str and str:sub(pos, pos):match("%s") do pos = pos + 1 end
     end
@@ -835,7 +842,7 @@ function WoWKeyb:ParseWoWKeybJSON(str)
         end
         return nil
     end
-    local function parseValue()
+    function parseValue()
         skipWhitespace()
         local ch = str:sub(pos, pos)
         if ch == '"' then return parseString()
@@ -848,7 +855,7 @@ function WoWKeyb:ParseWoWKeybJSON(str)
         end
         return nil
     end
-    local function parseObject()
+    function parseObject()
         if not expect("{") then return nil end
         local obj = {}
         skipWhitespace()
@@ -865,7 +872,7 @@ function WoWKeyb:ParseWoWKeybJSON(str)
             else return nil end
         until false
     end
-    local function parseArray()
+    function parseArray()
         if not expect("[") then return nil end
         local arr = {}
         skipWhitespace()
