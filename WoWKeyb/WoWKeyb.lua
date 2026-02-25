@@ -530,11 +530,19 @@ local function createMinimapButton()
     btn:RegisterForDrag("RightButton")
 
     local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(18, 18)
+    icon:SetSize(20, 20)
     icon:SetPoint("CENTER", 0, 0)
     icon:SetTexture("Interface\\AddOns\\WoWKeyb\\media\\wowkeyb")
-    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    icon:SetTexCoord(0.0, 1.0, 0.0, 1.0)
+
+    -- Clip the icon to a circle so it stays inside the minimap border ring.
+    local mask = btn:CreateMaskTexture(nil, "ARTWORK")
+    mask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    mask:SetPoint("TOPLEFT", btn, "TOPLEFT", 6, -6)
+    mask:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -6, 6)
+    icon:AddMaskTexture(mask)
     btn.icon = icon
+    btn.iconMask = mask
 
     local overlay = btn:CreateTexture(nil, "OVERLAY")
     overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
@@ -769,8 +777,20 @@ function WoWKeyb:ShowImportDialog(profileName)
                     return WoWKeyb:ParseWoWKeybJSON(text)
                 end)
                 if ok and decoded then
-                    WoWKeybDB.profiles[importFrame.profileName] = decoded
-                    print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importFrame.profileName)
+                    local importedName = importFrame.profileName
+                    if decoded.name and tostring(decoded.name):trim() ~= "" then
+                        importedName = tostring(decoded.name)
+                    end
+
+                    WoWKeybDB.profiles[importedName] = decoded
+
+                    -- Set imported profile as current so "Apply Current Profile" works immediately.
+                    if WoWKeybDB.currentProfile ~= importedName then
+                        WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
+                        WoWKeybDB.currentProfile = importedName
+                    end
+
+                    print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
                     if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
                         WoWKeyb.optionsPanel.refreshCurrentProfileText()
                     end
