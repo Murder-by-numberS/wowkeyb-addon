@@ -497,7 +497,8 @@ local function updateMinimapButtonPosition()
     if not WoWKeyb.minimapButton then return end
     local angle = WoWKeybDB.minimap and WoWKeybDB.minimap.angle or 225
     local radians = math.rad(angle)
-    local radius = 80
+    -- Keep the button around the minimap's outside edge.
+    local radius = 96
     local x = math.cos(radians) * radius
     local y = math.sin(radians) * radius
     WoWKeyb.minimapButton:ClearAllPoints()
@@ -519,24 +520,25 @@ end
 local function createMinimapButton()
     if WoWKeyb.minimapButton or not Minimap then return end
 
-    local btn = CreateFrame("Button", "WoWKeybMinimapButton", Minimap)
+    local btn = CreateFrame("Button", "WoWKeybMinimapButton", MinimapCluster or Minimap)
     btn:SetSize(32, 32)
-    btn:SetFrameStrata("MEDIUM")
+    btn:SetFrameStrata("HIGH")
+    btn:SetFrameLevel(8)
     btn:SetMovable(true)
     btn:EnableMouse(true)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     btn:RegisterForDrag("RightButton")
 
     local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(18, 18)
+    icon:SetSize(20, 20)
     icon:SetPoint("CENTER")
-    icon:SetTexture("Interface\\ICONS\\INV_Misc_Book_09")
+    icon:SetTexture("Interface\\AddOns\\WoWKeyb\\media\\wowkeyb")
     btn.icon = icon
 
     local overlay = btn:CreateTexture(nil, "OVERLAY")
     overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
     overlay:SetSize(54, 54)
-    overlay:SetPoint("TOPLEFT")
+    overlay:SetPoint("TOPLEFT", -11, 11)
     btn.overlay = overlay
 
     btn:SetScript("OnEnter", function(self)
