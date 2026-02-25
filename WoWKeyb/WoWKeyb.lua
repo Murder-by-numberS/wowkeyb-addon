@@ -255,6 +255,8 @@ local function buildLayoutBarIndexById(profile)
 end
 
 local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
+    local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
+
     -- 1) Explicit barId + slotIndex from web app
     if keybind and keybind.barId and (keybind.slotIndex or keybind.slot_index) ~= nil then
         local barIdx = layoutBarIndexById[keybind.barId]
@@ -269,14 +271,17 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
 
     -- 2) Fallback for legacy payloads: infer bar+slot by key grouping
     local layoutMap = KEY_TO_LAYOUT_SLOT[wowKey]
-    if profile and profile.layout and profile.layout.bars and layoutMap and profile.layout.bars[layoutMap.barIndex + 1] then
+    if hasLayout and layoutMap and profile.layout.bars[layoutMap.barIndex + 1] then
         local slot = (layoutMap.barIndex * 12) + layoutMap.slotIndex + 1
         if slot >= 1 and slot <= 60 then
             return slot
         end
     end
 
-    -- 3) Default direct key mapping
+    -- 3) Default direct key mapping (only when layout is absent).
+    if hasLayout then
+        return nil
+    end
     return KEY_TO_SLOT[wowKey]
 end
 
@@ -306,6 +311,7 @@ local function applyProfile(profile)
     local PickupSpell = C_Spell and C_Spell.PickupSpell or _G.PickupSpell
     local GetSpellInfo = C_Spell and C_Spell.GetSpellName or _G.GetSpellInfo
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
 
     -- Group by key (WoW allows one binding per key; use first spell if multiple)
     local keyToData = {}
@@ -331,7 +337,7 @@ local function applyProfile(profile)
     local keyToSlotMap = {}
     for _, wowKey in ipairs(sortedKeys) do
         local slot = keyToData[wowKey].preferredSlot
-        if not slot and nextExtraSlot <= 60 then
+        if not slot and (not hasLayout) and nextExtraSlot <= 60 then
             slot = nextExtraSlot
             nextExtraSlot = nextExtraSlot + 1
         end
@@ -485,6 +491,7 @@ local function createSettingsPanel()
 
     local panel = CreateFrame("Frame", "WoWKeybOptionsPanel", UIParent)
     panel.name = "WoWKeyb"
+    local selectedProfileName = nil
 
     local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", 16, -16)
@@ -504,9 +511,57 @@ local function createSettingsPanel()
     panel.refreshCurrentProfileText = refreshCurrentProfileText
     refreshCurrentProfileText()
 
+    local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    profileLabel:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
+    profileLabel:SetText("Selected profile:")
+
+    local profileDropdown = CreateFrame("Frame", "WoWKeybProfileDropdown", panel, "UIDropDownMenuTemplate")
+    profileDropdown:SetPoint("TOPLEFT", profileLabel, "BOTTOMLEFT", -16, -4)
+    UIDropDownMenu_SetWidth(profileDropdown, 220)
+
+    local function refreshProfileSelector()
+        local profiles = listStoredProfiles()
+        if #profiles == 0 then
+            selectedProfileName = nil
+            UIDropDownMenu_Initialize(profileDropdown, function() end)
+            UIDropDownMenu_SetText(profileDropdown, "No profiles")
+            return
+        end
+
+        local isValidSelection = false
+        for _, name in ipairs(profiles) do
+            if name == selectedProfileName then
+                isValidSelection = true
+                break
+            end
+        end
+        if not isValidSelection then
+            selectedProfileName = WoWKeybDB.currentProfile
+            if not selectedProfileName or not WoWKeybDB.profiles[selectedProfileName] then
+                selectedProfileName = profiles[1]
+            end
+        end
+
+        UIDropDownMenu_Initialize(profileDropdown, function(self, level)
+            for _, name in ipairs(profiles) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = name
+                info.checked = (name == selectedProfileName)
+                info.func = function()
+                    selectedProfileName = name
+                    UIDropDownMenu_SetText(profileDropdown, name)
+                end
+                UIDropDownMenu_AddButton(info, level)
+            end
+        end)
+        UIDropDownMenu_SetText(profileDropdown, selectedProfileName or profiles[1])
+    end
+    panel.refreshProfileSelector = refreshProfileSelector
+    refreshProfileSelector()
+
     local importBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     importBtn:SetSize(180, 24)
-    importBtn:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -14)
+    importBtn:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -10)
     importBtn:SetText("Import Profile JSON")
     importBtn:SetScript("OnClick", function()
         WoWKeyb:ShowImportDialog("ImportedProfile")
@@ -528,16 +583,17 @@ local function createSettingsPanel()
     local applyBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     applyBtn:SetSize(180, 24)
     applyBtn:SetPoint("TOPLEFT", listBtn, "BOTTOMLEFT", 0, -8)
-    applyBtn:SetText("Apply Current Profile")
+    applyBtn:SetText("Apply Selected Profile")
     applyBtn:SetScript("OnClick", function()
-        local current = WoWKeybDB.currentProfile
-        if not current then
-            print("|cffff0000[WoWKeyb]|r No current profile. Import/apply one first.")
+        local target = selectedProfileName
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile. Import one first.")
             return
         end
-        local profile = getStoredProfile(current)
+        local profile = getStoredProfile(target)
         if not profile then
-            print("|cffff0000[WoWKeyb]|r Current profile not found in storage.")
+            print("|cffff0000[WoWKeyb]|r Selected profile not found in storage.")
+            refreshProfileSelector()
             return
         end
         local ok, result = applyProfile(profile)
@@ -552,34 +608,42 @@ local function createSettingsPanel()
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
     deleteBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
-    deleteBtn:SetText("Delete Current Profile")
+    deleteBtn:SetText("Delete Selected Profile")
     deleteBtn:SetScript("OnClick", function()
-        local current = WoWKeybDB.currentProfile
-        if not current then
-            print("|cffff0000[WoWKeyb]|r No current profile selected.")
+        local target = selectedProfileName
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile.")
             return
         end
-        if not WoWKeybDB.profiles[current] then
-            print("|cffff0000[WoWKeyb]|r Current profile not found: " .. tostring(current))
-            WoWKeybDB.currentProfile = nil
+        if not WoWKeybDB.profiles[target] then
+            print("|cffff0000[WoWKeyb]|r Selected profile not found: " .. tostring(target))
+            selectedProfileName = nil
+            refreshProfileSelector()
             refreshCurrentProfileText()
             return
         end
 
-        WoWKeybDB.profiles[current] = nil
-        print("|cff00ff00[WoWKeyb]|r Deleted profile: " .. tostring(current))
+        WoWKeybDB.profiles[target] = nil
+        print("|cff00ff00[WoWKeyb]|r Deleted profile: " .. tostring(target))
 
-        if WoWKeybDB.previousProfile and WoWKeybDB.profiles[WoWKeybDB.previousProfile] then
-            WoWKeybDB.currentProfile = WoWKeybDB.previousProfile
-            WoWKeybDB.previousProfile = nil
-        else
+        if WoWKeybDB.currentProfile == target then
             WoWKeybDB.currentProfile = nil
+            if WoWKeybDB.previousProfile and WoWKeybDB.profiles[WoWKeybDB.previousProfile] then
+                WoWKeybDB.currentProfile = WoWKeybDB.previousProfile
+            end
+        end
+        if WoWKeybDB.previousProfile == target then
+            WoWKeybDB.previousProfile = nil
+        end
+        if not WoWKeybDB.currentProfile then
             for name, _ in pairs(WoWKeybDB.profiles) do
                 WoWKeybDB.currentProfile = name
                 break
             end
         end
+        selectedProfileName = WoWKeybDB.currentProfile
 
+        refreshProfileSelector()
         refreshCurrentProfileText()
     end)
 
@@ -902,6 +966,9 @@ function WoWKeyb:ShowImportDialog(profileName)
                     print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
                     if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
                         WoWKeyb.optionsPanel.refreshCurrentProfileText()
+                    end
+                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
+                        WoWKeyb.optionsPanel.refreshProfileSelector()
                     end
                     importFrame:Hide()
                 else
