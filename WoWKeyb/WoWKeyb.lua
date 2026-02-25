@@ -31,6 +31,16 @@ local function normalizeKey(key)
     return key:gsub("%+", "-"):upper()
 end
 
+-- Display key labels similar to Blizzard action bar hotkeys.
+local function formatHotkeyLabel(key)
+    if not key or key == "" then return "" end
+    local k = normalizeKey(key) or ""
+    return k
+        :gsub("SHIFT%-", "S-")
+        :gsub("CTRL%-", "C-")
+        :gsub("ALT%-", "A-")
+end
+
 -- Action bar slot ID to WoW binding command (default UI)
 local SLOT_COMMANDS = {}
 for i = 1, 12 do SLOT_COMMANDS[i] = "ACTIONBUTTON" .. i end
@@ -115,8 +125,10 @@ local function applyProfileWithLayout(profile)
     clearCustomLayoutFrames()
 
     local applied = 0
-    local slotSize = 36
-    local gap = 4
+    -- Match web editor proportions more closely so imported layouts line up in-game.
+    local baseSlotSize = 40
+    local baseGap = 4
+    local basePadding = 6
 
     for barIdx, bar in ipairs(layout.bars) do
         local pos = bar.position or {}
@@ -124,18 +136,22 @@ local function applyProfileWithLayout(profile)
         local py = pos.y or (screenH - 50)
         local orient = bar.orientation or "horizontal"
         local numSlots = bar.slots or 12
+        local barScale = tonumber(bar.scale) or 1
+        local slotSize = math.max(20, baseSlotSize * barScale)
+        local gap = math.max(1, baseGap * barScale)
+        local padding = math.max(2, basePadding * barScale)
 
         -- Convert design pixels to WoW coords (origin bottom-left)
-        local offsetX = (px - screenW / 2) * scaleX
-        local offsetY = (screenH / 2 - py) * scaleY
+        local offsetX = math.floor(((px - screenW / 2) * scaleX) + 0.5)
+        local offsetY = math.floor(((screenH / 2 - py) * scaleY) + 0.5)
 
         local barWidth, barHeight
         if orient == "vertical" then
-            barWidth = slotSize + gap
-            barHeight = numSlots * (slotSize + gap) - gap
+            barWidth = slotSize + (padding * 2)
+            barHeight = (numSlots * slotSize) + ((numSlots - 1) * gap) + (padding * 2)
         else
-            barWidth = numSlots * (slotSize + gap) - gap
-            barHeight = slotSize + gap
+            barWidth = (numSlots * slotSize) + ((numSlots - 1) * gap) + (padding * 2)
+            barHeight = slotSize + (padding * 2)
         end
 
         local container = CreateFrame("Frame", "WoWKeybBar" .. barIdx, UIParent)
@@ -157,15 +173,33 @@ local function applyProfileWithLayout(profile)
             btn:SetFrameLevel(20)
 
             if orient == "vertical" then
-                btn:SetPoint("TOP", container, "TOP", 0, -slotIdx * (slotSize + gap))
+                btn:SetPoint("TOP", container, "TOP", 0, -padding - (slotIdx * (slotSize + gap)))
             else
-                btn:SetPoint("LEFT", container, "LEFT", slotIdx * (slotSize + gap), 0)
+                btn:SetPoint("LEFT", container, "LEFT", padding + (slotIdx * (slotSize + gap)), 0)
             end
 
             -- Style the button (border + optional spell icon)
             btn:SetNormalTexture("Interface\\Buttons\\UI-Quickslot2")
             btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
             btn:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
+
+            -- Show key/slot labels so bars look and read like normal WoW action bars.
+            local displayKey = nil
+            if bar.slotKeys and bar.slotKeys[slotIdx + 1] and bar.slotKeys[slotIdx + 1] ~= "" then
+                displayKey = bar.slotKeys[slotIdx + 1]
+            elseif slotData and slotData.key then
+                displayKey = slotData.key
+            end
+            local hotkeyText = formatHotkeyLabel(displayKey)
+            if hotkeyText == "" then
+                hotkeyText = tostring(slotIdx + 1)
+            end
+            local hotkey = btn:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+            hotkey:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -2, 2)
+            hotkey:SetText(hotkeyText)
+            hotkey:SetJustifyH("RIGHT")
+            hotkey:SetTextColor(1, 0.82, 0, 0.95)
+            btn.WoWKeybHotkey = hotkey
 
             if slotData and slotData.spell then
                 local spell = slotData.spell
@@ -529,20 +563,22 @@ local function createMinimapButton()
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     btn:RegisterForDrag("RightButton")
 
+    local bg = btn:CreateTexture(nil, "BACKGROUND")
+    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    bg:SetPoint("CENTER", 0, 0)
+    bg:SetSize(20, 20)
+    btn.bg = bg
+
     local icon = btn:CreateTexture(nil, "ARTWORK")
     icon:SetSize(20, 20)
     icon:SetPoint("CENTER", 0, 0)
     icon:SetTexture("Interface\\AddOns\\WoWKeyb\\media\\wowkeyb")
-    icon:SetTexCoord(0.0, 1.0, 0.0, 1.0)
-
-    -- Clip the icon to a circle so it stays inside the minimap border ring.
-    local mask = btn:CreateMaskTexture(nil, "ARTWORK")
-    mask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    mask:SetPoint("TOPLEFT", btn, "TOPLEFT", 6, -6)
-    mask:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -6, 6)
-    icon:AddMaskTexture(mask)
+    icon:SetTexCoord(0.02, 0.98, 0.02, 0.98)
+    -- Retail-safe circular mask; keeps square logos inside the minimap ring.
+    if icon.SetMask then
+        icon:SetMask("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
+    end
     btn.icon = icon
-    btn.iconMask = mask
 
     local overlay = btn:CreateTexture(nil, "OVERLAY")
     overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
