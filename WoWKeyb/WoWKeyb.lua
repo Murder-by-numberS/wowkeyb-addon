@@ -46,7 +46,23 @@ end
 -- Normalize key for grouping (multiple spells can share a key - we use first only)
 local function normalizeKey(key)
     if not key then return nil end
-    return key:gsub("%+", "-"):upper()
+    local normalized = tostring(key):upper()
+    normalized = normalized:gsub("%s*%+%s*", "-")
+    normalized = normalized:gsub("%s+", "-")
+    normalized = normalized:gsub("%-+", "-")
+    normalized = normalized:gsub("^%-", "")
+    normalized = normalized:gsub("%-$", "")
+    normalized = normalized:gsub("CONTROL%-", "CTRL-")
+    -- Support symbol shorthand often used for shifted numbers.
+    local shiftedNumberBySymbol = {
+        ["!"] = "1", ["@"] = "2", ["#"] = "3", ["$"] = "4", ["%"] = "5",
+        ["^"] = "6", ["&"] = "7", ["*"] = "8", ["("] = "9", [")"] = "0",
+    }
+    local shiftedNumber = shiftedNumberBySymbol[normalized]
+    if shiftedNumber then
+        normalized = "SHIFT-" .. shiftedNumber
+    end
+    return normalized
 end
 
 local function normalizeClassName(value)
@@ -97,6 +113,26 @@ for i = 1, 12 do SLOT_COMMANDS[12 + i] = "MULTIACTIONBAR1BUTTON" .. i end
 for i = 1, 12 do SLOT_COMMANDS[24 + i] = "MULTIACTIONBAR2BUTTON" .. i end
 for i = 1, 12 do SLOT_COMMANDS[36 + i] = "MULTIACTIONBAR3BUTTON" .. i end
 for i = 1, 12 do SLOT_COMMANDS[48 + i] = "MULTIACTIONBAR4BUTTON" .. i end
+
+-- Convert logical WoWKeyb slot (1..60 across bars 1..5) to Blizzard action slot IDs
+-- used by PlaceAction/GetActionInfo.
+local function toBlizzardActionSlot(slot)
+    if not slot or slot < 1 or slot > 60 then return slot end
+    local bar = math.floor((slot - 1) / 12) + 1
+    local idx = ((slot - 1) % 12) + 1
+    if bar == 1 then
+        return idx -- 1..12
+    elseif bar == 2 then
+        return 60 + idx -- MultiBarBottomLeft: 61..72
+    elseif bar == 3 then
+        return 48 + idx -- MultiBarBottomRight: 49..60
+    elseif bar == 4 then
+        return 24 + idx -- MultiBarRight: 25..36
+    elseif bar == 5 then
+        return 36 + idx -- MultiBarLeft: 37..48
+    end
+    return slot
+end
 
 -- Map WoWKeyb key to action bar slot (1-60). Uses Blizzard default layout for number keys.
 -- Other keys (E, R, Q, etc.) get slots 49+ so they appear on bar 5.
@@ -386,8 +422,15 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     -- 1) Explicit barId + slotIndex from web app
     if keybind and keybind.barId and (keybind.slotIndex or keybind.slot_index) ~= nil then
         local barIdx = layoutBarIndexById[keybind.barId]
-        local slotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
-        if barIdx ~= nil and slotIdx and slotIdx >= 0 and slotIdx <= 11 then
+        local rawSlotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
+        local slotIdx = nil
+        -- Support both legacy zero-based (0-11) and one-based (1-12) slot indexing.
+        if rawSlotIdx and rawSlotIdx >= 0 and rawSlotIdx <= 11 then
+            slotIdx = rawSlotIdx
+        elseif rawSlotIdx and rawSlotIdx >= 1 and rawSlotIdx <= 12 then
+            slotIdx = rawSlotIdx - 1
+        end
+        if barIdx ~= nil and slotIdx ~= nil then
             local slot = (barIdx * 12) + slotIdx + 1
             if slot >= 1 and slot <= 60 then
                 return slot
@@ -462,7 +505,7 @@ local function syncProfileSpellsFromActionBars(profileName)
             local slot = resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
             if slot then
                 local currentSpell = keybind.spell or {}
-                local barSpell = readSpellFromActionSlot(slot)
+                local barSpell = readSpellFromActionSlot(toBlizzardActionSlot(slot))
                 if barSpell then
                     local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
                     local prevName = tostring(currentSpell.name or "")
@@ -648,7 +691,15 @@ local function applySelectionByName(target)
     if not profile then
         return false, "Profile not found: " .. tostring(target)
     end
-    return applyProfile(profile)
+    local ok, result = applyProfile(profile)
+    if ok then
+        -- Keep active profile pointer tied to the stored profile key used for selection.
+        if WoWKeybDB.currentProfile ~= target then
+            WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
+            WoWKeybDB.currentProfile = target
+        end
+    end
+    return ok, result
 end
 
 applyProfile = function(profile)
@@ -732,10 +783,28 @@ applyProfile = function(profile)
         -- In layout mode, spell placement should follow resolved slot mapping even when
         -- keybind.key is missing/empty, since bindings may come from layout.slotKeys.
         local slotToData = {}
+        local layoutKeyToSlots = {}
+        for slot, layoutKey in pairs(layoutSlotToKey) do
+            if layoutKey and layoutKey ~= "" then
+                layoutKeyToSlots[layoutKey] = layoutKeyToSlots[layoutKey] or {}
+                table.insert(layoutKeyToSlots[layoutKey], slot)
+            end
+        end
+        for _, slots in pairs(layoutKeyToSlots) do
+            table.sort(slots)
+        end
         for _, keybind in ipairs(profile.keybinds) do
             if keybind and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
                 local nk = normalizeKey(keybind.key or "")
                 local slot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById)
+                if (not slot) and nk and nk ~= "" and layoutKeyToSlots[nk] then
+                    for _, candidate in ipairs(layoutKeyToSlots[nk]) do
+                        if not slotToData[candidate] then
+                            slot = candidate
+                            break
+                        end
+                    end
+                end
                 if slot and not slotToData[slot] then
                     slotToData[slot] = {
                         spell = keybind.spell,
@@ -824,7 +893,7 @@ applyProfile = function(profile)
                 end
 
                 if pickedUp then
-                    PlaceAction(slot)
+                    PlaceAction(toBlizzardActionSlot(slot))
                     ClearCursor()
                 end
 
@@ -1033,20 +1102,34 @@ local function buildViewerData(profile)
     local keybinds = profile and profile.keybinds or {}
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
 
+    local function viewerBaseKey(key)
+        local k = normalizeKey(key)
+        if not k or k == "" then return nil end
+        -- Group modifier variants (SHIFT/CTRL/ALT) on the same base key tile.
+        local changed = true
+        while changed do
+            changed = false
+            if k:find("^SHIFT%-") then
+                k = k:gsub("^SHIFT%-", "")
+                changed = true
+            elseif k:find("^CTRL%-") then
+                k = k:gsub("^CTRL%-", "")
+                changed = true
+            elseif k:find("^ALT%-") then
+                k = k:gsub("^ALT%-", "")
+                changed = true
+            end
+        end
+        return k
+    end
+
     for _, kb in ipairs(keybinds) do
-        if kb and kb.key and kb.key ~= "" then
+        if kb and kb.spell and (kb.spell.spellId or kb.spell.name) then
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or "")
             local spellIcon = spell.icon
-            local wowKey = normalizeKey(kb.key)
+            local wowKey = normalizeKey(kb.key or "")
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
-            keyToEntries[kb.key] = keyToEntries[kb.key] or {}
-            table.insert(keyToEntries[kb.key], {
-                key = tostring(kb.key or ""),
-                spellName = spellName ~= "" and spellName or "(no spell)",
-                icon = spellIcon,
-                slot = slot,
-            })
 
             if slot then
                 slotData[slot] = slotData[slot] or {
@@ -1076,6 +1159,26 @@ local function buildViewerData(profile)
                     spellName = "-",
                     icon = nil,
                 }
+            end
+        end
+    end
+
+    -- Build keyboard entries from final resolved slot data so layout.slotKeys (e.g. Shift+5)
+    -- are reflected even when original keybind records have empty/missing key fields.
+    keyToEntries = {}
+    for slot = 1, 60 do
+        local entry = slotData[slot]
+        if entry and entry.key and entry.key ~= "" then
+            local normalizedEntryKey = normalizeKey(entry.key)
+            local baseKey = viewerBaseKey(normalizedEntryKey)
+            if baseKey and baseKey ~= "" then
+                keyToEntries[baseKey] = keyToEntries[baseKey] or {}
+                table.insert(keyToEntries[baseKey], {
+                    key = tostring(entry.key or ""),
+                    spellName = tostring(entry.spellName or "-"),
+                    icon = entry.icon,
+                    slot = slot,
+                })
             end
         end
     end
@@ -1209,7 +1312,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
     if not viewerFrame then
         viewerFrame = CreateFrame("Frame", "WoWKeybViewerFrame", UIParent, "BackdropTemplate")
-        viewerFrame:SetSize(980, 640)
+        viewerFrame:SetSize(1020, 740)
         viewerFrame:SetPoint("CENTER")
         viewerFrame:SetFrameStrata("DIALOG")
         viewerFrame:SetFrameLevel(120)
@@ -1246,7 +1349,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local keyboardContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
         keyboardContainer:SetPoint("TOPLEFT", keyboardTitle, "BOTTOMLEFT", 0, -6)
-        keyboardContainer:SetSize(940, 220)
+        keyboardContainer:SetSize(980, 220)
         if keyboardContainer.SetBackdrop then
             keyboardContainer:SetBackdrop({
                 bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -1326,8 +1429,8 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local barsContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
         barsContainer:SetPoint("TOPLEFT", barsTitle, "BOTTOMLEFT", 0, -6)
-        -- Keep a larger footer gap so the bottom action bar never overlaps controls.
-        barsContainer:SetSize(940, 248)
+        -- Keep a large footer gap so the bottom action bar never overlaps controls.
+        barsContainer:SetSize(980, 322)
         if barsContainer.SetBackdrop then
             barsContainer:SetBackdrop({
                 bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -1340,17 +1443,17 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         end
 
         viewerFrame.barCells = {}
-        local slotSize, slotGap = 34, 4
+        local slotSize, slotGap, rowHeight = 38, 5, 60
         for barIdx = 1, 5 do
             local barLabel = barsContainer:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            barLabel:SetPoint("TOPLEFT", 10, -10 - (barIdx - 1) * 54)
+            barLabel:SetPoint("TOPLEFT", 10, -12 - (barIdx - 1) * rowHeight)
             barLabel:SetText("Bar " .. tostring(barIdx))
 
             viewerFrame.barCells[barIdx] = {}
             for slotIdx = 1, 12 do
                 local cell = CreateFrame("Frame", nil, barsContainer, "BackdropTemplate")
                 cell:SetSize(slotSize, slotSize)
-                cell:SetPoint("TOPLEFT", 70 + (slotIdx - 1) * (slotSize + slotGap), -6 - (barIdx - 1) * 54)
+                cell:SetPoint("TOPLEFT", 80 + (slotIdx - 1) * (slotSize + slotGap), -8 - (barIdx - 1) * rowHeight)
                 if cell.SetBackdrop then
                     cell:SetBackdrop({
                         bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -1383,7 +1486,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(120, 22)
-        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 14)
+        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 18)
         refreshBtn:SetText("Refresh")
         refreshBtn:SetScript("OnClick", function()
             refreshViewerFrame(viewerFrame)
@@ -1391,7 +1494,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
-        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -90, 14)
+        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -90, 18)
         closeBtn:SetText("Close")
         closeBtn:SetScript("OnClick", function() viewerFrame:Hide() end)
     end
@@ -1989,6 +2092,8 @@ function WoWKeyb:ShowImportDialog(profileName)
                         importedName = tostring(decoded.name)
                     end
 
+                    -- Persist the canonical storage key in the profile payload for consistency.
+                    decoded.name = importedName
                     WoWKeybDB.profiles[importedName] = decoded
 
                     -- Set imported profile as current so "Apply Current Profile" works immediately.
@@ -2012,6 +2117,10 @@ function WoWKeyb:ShowImportDialog(profileName)
                     end
                     if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
                         WoWKeyb.optionsPanel.refreshProfileSelector()
+                    end
+                    if viewerFrame and viewerFrame:IsShown() then
+                        viewerFrame.profileName = importedName
+                        refreshViewerFrame(viewerFrame)
                     end
                     importFrame:Hide()
                 else
