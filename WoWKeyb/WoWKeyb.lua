@@ -677,7 +677,10 @@ applyProfile = function(profile)
     clearCustomLayoutFrames()
     applyBarModeVisibility(false)
 
-    local PickupSpell = C_Spell and C_Spell.PickupSpell or _G.PickupSpell
+    local PickupSpell = _G.PickupSpell
+    if C_Spell and type(C_Spell.PickupSpell) == "function" then
+        PickupSpell = C_Spell.PickupSpell
+    end
     local GetSpellInfo = C_Spell and C_Spell.GetSpellName or _G.GetSpellInfo
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
     local layoutSlotToKey = {}
@@ -777,13 +780,13 @@ applyProfile = function(profile)
             else
                 -- 1. Place spell on action bar (default WoW UI)
                 local pickedUp = false
-                if spellId then
+                if spellId and type(PickupSpell) == "function" then
                     pcall(function()
                         PickupSpell(spellId)
                     end)
                     pickedUp = GetCursorInfo() ~= nil
                 end
-                if (not pickedUp) and spellName and spellName ~= "" then
+                if (not pickedUp) and spellName and spellName ~= "" and type(PickupSpell) == "function" then
                     if spellId then
                         PickupSpell(spellName)
                     else
@@ -994,6 +997,182 @@ local function serializeSyncedProfile(profileName, profile)
         '}'
     })
     return profileJson
+end
+
+local function buildViewerTextForProfile(profileName, profile)
+    if not profile then
+        return "Profile not found."
+    end
+
+    local lines = {}
+    local displayName = tostring(profile.name or profileName or "Unknown")
+    table.insert(lines, "Profile: " .. displayName)
+    table.insert(lines, "Class: " .. tostring(profile.class or "Unknown"))
+    table.insert(lines, "Spec: " .. tostring(profile.spec or "-"))
+    table.insert(lines, "Hero Talent: " .. tostring(profile.heroTalent or "-"))
+    table.insert(lines, "")
+    table.insert(lines, "=== Keyboard View (read-only) ===")
+
+    local keyToSpell = {}
+    local keybinds = profile.keybinds or {}
+    for _, kb in ipairs(keybinds) do
+        if kb and kb.key and kb.key ~= "" and not keyToSpell[kb.key] then
+            local spell = kb.spell or {}
+            local spellName = tostring(spell.name or "")
+            keyToSpell[kb.key] = spellName ~= "" and spellName or "(no spell)"
+        end
+    end
+
+    local keyboardRows = {
+        { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=" },
+        { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
+        { "A", "S", "D", "F", "G", "H", "J", "K", "L" },
+        { "Z", "X", "C", "V", "B", "N", "M" },
+    }
+
+    for _, row in ipairs(keyboardRows) do
+        local rowChunks = {}
+        for _, key in ipairs(row) do
+            local spellName = keyToSpell[key] or "-"
+            table.insert(rowChunks, string.format("[%s:%s]", key, spellName))
+        end
+        table.insert(lines, table.concat(rowChunks, " "))
+    end
+    table.insert(lines, "")
+
+    table.insert(lines, "=== Blizzard Action Bars (read-only) ===")
+    local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    local slotData = {}
+
+    for _, kb in ipairs(keybinds) do
+        if kb and kb.key then
+            local wowKey = normalizeKey(kb.key)
+            local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
+            if slot then
+                local spell = kb.spell or {}
+                local spellName = tostring(spell.name or "")
+                slotData[slot] = slotData[slot] or {
+                    key = tostring(kb.key or ""),
+                    spell = spellName ~= "" and spellName or "(no spell)",
+                }
+            end
+        end
+    end
+
+    local bars = profile.layout and profile.layout.bars or {}
+    for barIdx = 1, 5 do
+        table.insert(lines, string.format("Bar %d:", barIdx))
+        local bar = bars[barIdx]
+        local slotKeys = (bar and type(bar.slotKeys) == "table") and bar.slotKeys or {}
+        local chunks = {}
+        for slotIdx = 1, 12 do
+            local globalSlot = ((barIdx - 1) * 12) + slotIdx
+            local s = slotData[globalSlot]
+            local key = ""
+            if s and s.key and s.key ~= "" then
+                key = s.key
+            else
+                key = tostring(slotKeys[slotIdx] or "")
+            end
+            local spellName = (s and s.spell) or "-"
+            local cell = string.format("%02d[%s|%s]", slotIdx, key ~= "" and key or "-", spellName)
+            table.insert(chunks, cell)
+        end
+        table.insert(lines, table.concat(chunks, "  "))
+        table.insert(lines, "")
+    end
+
+    return table.concat(lines, "\n")
+end
+
+local viewerFrame
+function WoWKeyb:ShowKeybindingViewer(profileName)
+    local target = profileName or WoWKeybDB.currentProfile
+    if not target or target == BLIZZARD_DEFAULT_PROFILE then
+        print("|cffff0000[WoWKeyb]|r Select a non-default profile first.")
+        return
+    end
+    local profile = getStoredProfile(target)
+    if not profile then
+        print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+        return
+    end
+
+    if viewerFrame and viewerFrame:IsShown() then
+        viewerFrame:Hide()
+    end
+
+    if not viewerFrame then
+        viewerFrame = CreateFrame("Frame", "WoWKeybViewerFrame", UIParent, "BackdropTemplate")
+        viewerFrame:SetSize(860, 560)
+        viewerFrame:SetPoint("CENTER")
+        viewerFrame:SetFrameStrata("DIALOG")
+        viewerFrame:SetFrameLevel(120)
+        if viewerFrame.SetBackdrop then
+            viewerFrame:SetBackdrop({
+                bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+                tile = true, tileSize = 32, edgeSize = 32,
+                insets = { left = 11, right = 12, top = 12, bottom = 11 },
+            })
+        end
+        viewerFrame:SetMovable(true)
+        viewerFrame:EnableMouse(true)
+        viewerFrame:RegisterForDrag("LeftButton")
+        viewerFrame:SetScript("OnDragStart", function() viewerFrame:StartMoving() end)
+        viewerFrame:SetScript("OnDragStop", function() viewerFrame:StopMovingOrSizing() end)
+
+        local title = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOPLEFT", 18, -18)
+        title:SetText("WoWKeyb - Keybinding Viewer (read-only)")
+
+        local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
+        subtitle:SetText("Keyboard + action bar mapping for selected profile")
+
+        local scroll = CreateFrame("ScrollFrame", "WoWKeybViewerScroll", viewerFrame, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 20, -50)
+        scroll:SetPoint("BOTTOMRIGHT", -42, 58)
+
+        local edit = CreateFrame("EditBox", "WoWKeybViewerEdit", scroll)
+        edit:SetSize(790, 460)
+        edit:SetMultiLine(true)
+        edit:SetAutoFocus(false)
+        edit:EnableKeyboard(true)
+        edit:EnableMouse(true)
+        edit:SetMaxLetters(0)
+        edit:SetFontObject("GameFontHighlightSmall")
+        edit:SetTextInsets(6, 6, 6, 6)
+        edit:SetScript("OnEscapePressed", function() viewerFrame:Hide() end)
+        edit:SetScript("OnEnterPressed", function(self) self:Insert("\n") end)
+        scroll:SetScrollChild(edit)
+        viewerFrame.editBox = edit
+
+        local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
+        refreshBtn:SetSize(120, 22)
+        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 20)
+        refreshBtn:SetText("Refresh")
+        refreshBtn:SetScript("OnClick", function()
+            if viewerFrame.profileName then
+                local p = getStoredProfile(viewerFrame.profileName)
+                WoWKeybViewerEdit:SetText(buildViewerTextForProfile(viewerFrame.profileName, p))
+                WoWKeybViewerEdit:SetFocus()
+                WoWKeybViewerEdit:HighlightText(0, 0)
+            end
+        end)
+
+        local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
+        closeBtn:SetSize(120, 22)
+        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -90, 20)
+        closeBtn:SetText("Close")
+        closeBtn:SetScript("OnClick", function() viewerFrame:Hide() end)
+    end
+
+    viewerFrame.profileName = target
+    viewerFrame:Show()
+    WoWKeybViewerEdit:SetText(buildViewerTextForProfile(target, profile))
+    WoWKeybViewerEdit:SetFocus()
+    WoWKeybViewerEdit:HighlightText(0, 0)
 end
 
 local exportFrame
@@ -1213,9 +1392,26 @@ local function createSettingsPanel()
         WoWKeyb:ShowExportDialog(target)
     end)
 
+    local viewerBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    viewerBtn:SetSize(180, 24)
+    viewerBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
+    viewerBtn:SetText("View Keybinding Map")
+    viewerBtn:SetScript("OnClick", function()
+        local target = selectedProfileName or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile to view.")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default has no profile mapping to view.")
+            return
+        end
+        WoWKeyb:ShowKeybindingViewer(target)
+    end)
+
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetPoint("TOPLEFT", viewerBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Selected Profile")
     local function deleteProfileByName(target)
         if not target then
@@ -1449,6 +1645,23 @@ local function slashHandler(msg)
         WoWKeyb:ShowExportDialog(target)
         return
 
+    elseif cmd == "view" or cmd == "v" then
+        local target = arg ~= "" and arg or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No target profile. Usage: /wowkeyb view <profile name>")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default has no profile mapping to view.")
+            return
+        end
+        if not getStoredProfile(target) then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+            return
+        end
+        WoWKeyb:ShowKeybindingViewer(target)
+        return
+
     else
         print("|cff00ff00[WoWKeyb]|r Commands:")
         print("  /wowkeyb apply <name>  - Apply a stored profile")
@@ -1456,6 +1669,7 @@ local function slashHandler(msg)
         print("  /wowkeyb toggle       - Toggle between last two profiles")
         print("  /wowkeyb import <name> - Import profile from JSON (paste in dialog)")
         print("  /wowkeyb export [name] - Export selected profile JSON")
+        print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb delete <name> - Delete a stored profile")
         print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
