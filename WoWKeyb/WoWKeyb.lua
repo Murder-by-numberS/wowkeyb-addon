@@ -1000,7 +1000,7 @@ local function serializeSyncedProfile(profileName, profile)
 end
 
 local function buildViewerData(profile)
-    local keyToSpell = {}
+    local keyToEntries = {}
     local slotData = {}
     local keybinds = profile and profile.keybinds or {}
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
@@ -1010,15 +1010,15 @@ local function buildViewerData(profile)
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or "")
             local spellIcon = spell.icon
-            if not keyToSpell[kb.key] then
-                keyToSpell[kb.key] = {
-                    spellName = spellName ~= "" and spellName or "(no spell)",
-                    icon = spellIcon,
-                }
-            end
-
             local wowKey = normalizeKey(kb.key)
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
+            keyToEntries[kb.key] = keyToEntries[kb.key] or {}
+            table.insert(keyToEntries[kb.key], {
+                spellName = spellName ~= "" and spellName or "(no spell)",
+                icon = spellIcon,
+                slot = slot,
+            })
+
             if slot then
                 slotData[slot] = slotData[slot] or {
                     key = tostring(kb.key or ""),
@@ -1051,10 +1051,10 @@ local function buildViewerData(profile)
         end
     end
 
-    return keyToSpell, slotData
+    return keyToEntries, slotData
 end
 
-local function setViewerCell(cell, key, spellName, icon)
+local function setBarViewerCell(cell, key, spellName, icon)
     if not cell then return end
     local cleanKey = (key and key ~= "") and key or "-"
     local cleanSpell = (spellName and spellName ~= "") and spellName or "-"
@@ -1066,6 +1066,64 @@ local function setViewerCell(cell, key, spellName, icon)
     else
         cell.icon:SetTexture(nil)
         cell.icon:Hide()
+    end
+end
+
+local function slotToBarSlotLabel(slot)
+    if not slot then return "Unmapped" end
+    local bar = math.floor((slot - 1) / 12) + 1
+    local idx = ((slot - 1) % 12) + 1
+    return string.format("Bar %d Slot %d", bar, idx)
+end
+
+local function showKeyboardCellTooltip(cell)
+    local key = cell and cell.viewerKey
+    if not key then return end
+    local entries = (cell and cell.viewerEntries) or {}
+
+    GameTooltip:SetOwner(cell, "ANCHOR_RIGHT")
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine("Key: " .. tostring(key), 1, 1, 1)
+    if #entries == 0 then
+        GameTooltip:AddLine("No abilities assigned", 0.8, 0.8, 0.8)
+    else
+        GameTooltip:AddLine(string.format("%d ability binding(s)", #entries), 0.8, 0.8, 0.8)
+        for _, entry in ipairs(entries) do
+            local iconPrefix = ""
+            if entry.icon and entry.icon ~= "" then
+                iconPrefix = string.format("|T%s:14|t ", tostring(entry.icon))
+            end
+            local name = entry.spellName or "(no spell)"
+            local slotLabel = slotToBarSlotLabel(entry.slot)
+            GameTooltip:AddLine(string.format("%s%s - %s", iconPrefix, name, slotLabel), 0.95, 0.95, 0.95)
+        end
+    end
+    GameTooltip:Show()
+end
+
+local function setKeyboardViewerCell(cell, key, entries)
+    if not cell then return end
+    local cleanKey = (key and key ~= "") and key or "-"
+    local list = entries or {}
+    local first = list[1]
+    cell.viewerKey = cleanKey
+    cell.viewerEntries = list
+    cell.keyText:SetText(cleanKey)
+
+    if first and first.icon and first.icon ~= "" then
+        cell.icon:SetTexture(first.icon)
+        cell.icon:Show()
+    else
+        cell.icon:SetTexture(nil)
+        cell.icon:Hide()
+    end
+
+    if #list > 1 then
+        cell.countText:SetText("x" .. tostring(#list))
+        cell.countText:Show()
+    else
+        cell.countText:SetText("")
+        cell.countText:Hide()
     end
 end
 
@@ -1082,20 +1140,16 @@ local function refreshViewerFrame(frame)
         tostring(profile.heroTalent or "-")
     ))
 
-    local keyToSpell, slotData = buildViewerData(profile)
+    local keyToEntries, slotData = buildViewerData(profile)
 
     local unknownKeys = {}
     for key, cell in pairs(frame.keyboardCells) do
-        local data = keyToSpell[key]
-        if data then
-            setViewerCell(cell, key, data.spellName, data.icon)
-        else
-            setViewerCell(cell, key, "-", nil)
-        end
+        local entries = keyToEntries[key] or {}
+        setKeyboardViewerCell(cell, key, entries)
     end
-    for key, data in pairs(keyToSpell) do
+    for key, entries in pairs(keyToEntries) do
         if not frame.keyboardCells[key] then
-            table.insert(unknownKeys, string.format("%s -> %s", key, data.spellName))
+            table.insert(unknownKeys, string.format("%s (%d)", key, #entries))
         end
     end
     table.sort(unknownKeys)
@@ -1110,7 +1164,7 @@ local function refreshViewerFrame(frame)
             local globalSlot = ((barIdx - 1) * 12) + slotIdx
             local data = slotData[globalSlot] or { key = "-", spellName = "-", icon = nil }
             local cell = frame.barCells[barIdx][slotIdx]
-            setViewerCell(cell, data.key, data.spellName, data.icon)
+            setBarViewerCell(cell, data.key, data.spellName, data.icon)
         end
     end
 end
@@ -1217,11 +1271,19 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 cell.keyText:SetPoint("TOPRIGHT", -4, -4)
                 cell.keyText:SetText(key)
 
-                cell.spellText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-                cell.spellText:SetPoint("BOTTOMLEFT", 4, 4)
-                cell.spellText:SetPoint("RIGHT", -4, 0)
-                cell.spellText:SetJustifyH("LEFT")
-                cell.spellText:SetText("-")
+                cell.countText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                cell.countText:SetPoint("BOTTOMRIGHT", -4, 4)
+                cell.countText:SetText("")
+                cell.countText:Hide()
+
+                cell:SetScript("OnEnter", function(self)
+                    self:SetScale(1.15)
+                    showKeyboardCellTooltip(self)
+                end)
+                cell:SetScript("OnLeave", function(self)
+                    self:SetScale(1.0)
+                    GameTooltip:Hide()
+                end)
 
                 viewerFrame.keyboardCells[key] = cell
             end
