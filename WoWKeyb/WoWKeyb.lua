@@ -420,12 +420,17 @@ local function readSpellFromActionSlot(slot)
         return nil
     end
 
-    local spellName, _, spellIcon = GetSpellInfo(actionId)
+    local spellName, spellIcon = "", ""
     if C_Spell and C_Spell.GetSpellName then
         spellName = C_Spell.GetSpellName(actionId) or spellName
     end
     if C_Spell and C_Spell.GetSpellTexture then
         spellIcon = C_Spell.GetSpellTexture(actionId) or spellIcon
+    end
+    if (not spellName or spellName == "") and _G.GetSpellInfo then
+        local fallbackName, _, fallbackIcon = _G.GetSpellInfo(actionId)
+        spellName = fallbackName or spellName
+        spellIcon = fallbackIcon or spellIcon
     end
 
     return {
