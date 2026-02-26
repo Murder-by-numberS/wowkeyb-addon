@@ -925,6 +925,13 @@ local function createSettingsPanel()
             table.insert(selectorOptions, name)
         end
 
+        -- Keep dropdown aligned with real applied/current profile state,
+        -- especially after imports that update WoWKeybDB.currentProfile.
+        local preferredSelection = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
+        if preferredSelection == BLIZZARD_DEFAULT_PROFILE or WoWKeybDB.profiles[preferredSelection] then
+            selectedProfileName = preferredSelection
+        end
+
         local isValidSelection = false
         for _, name in ipairs(selectorOptions) do
             if name == selectedProfileName then
