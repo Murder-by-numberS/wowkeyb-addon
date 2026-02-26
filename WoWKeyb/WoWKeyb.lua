@@ -8,6 +8,7 @@ local addonName, WoWKeyb = ...
 WoWKeyb.addonName = addonName
 local BLIZZARD_DEFAULT_PROFILE = "Blizzard Default"
 local MINIMAP_LDB_NAME = "WoWKeyb"
+WoWKeyb.isApplyingProfile = false
 
 -- Default saved variables
 local function ensureDBDefaults()
@@ -475,19 +476,6 @@ local function syncProfileSpellsFromActionBars(profileName)
                         }
                         changed = changed + 1
                     end
-                else
-                    local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
-                    local prevName = tostring(currentSpell.name or "")
-                    local prevIcon = tostring(currentSpell.icon or "")
-                    if prevId ~= "" or prevName ~= "" or prevIcon ~= "" then
-                        keybind.spell = {
-                            spellId = "",
-                            name = "",
-                            icon = "",
-                            description = currentSpell.description or "",
-                        }
-                        changed = changed + 1
-                    end
                 end
             end
         end
@@ -683,6 +671,8 @@ applyProfile = function(profile)
         return false, "Cannot apply keybindings while in combat"
     end
 
+    WoWKeyb.isApplyingProfile = true
+
     local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
     clearCustomLayoutFrames()
     applyBarModeVisibility(false)
@@ -849,6 +839,7 @@ applyProfile = function(profile)
         WoWKeybDB.currentProfile = profileName
     end
 
+    WoWKeyb.isApplyingProfile = false
     return true, string.format("Applied %d keybindings (%d skipped) [mode: blizzard]", applied, skipped)
 end
 
@@ -1528,7 +1519,12 @@ function WoWKeyb:ShowImportDialog(profileName)
         end)
         edit:SetScript("OnTextChanged", function(self, userInput)
             if userInput then
-                local textHeight = self:GetStringHeight() or 0
+                local textHeight = 0
+                if self.GetStringHeight then
+                    textHeight = self:GetStringHeight() or 0
+                elseif self.GetHeight then
+                    textHeight = self:GetHeight() or 0
+                end
                 local viewHeight = scroll:GetHeight() or 0
                 scroll:SetVerticalScroll(math.max(0, textHeight - viewHeight))
             end
@@ -1725,6 +1721,7 @@ do
                 if not slot then return end
                 if not WoWKeybDB or not WoWKeybDB.currentProfile then return end
                 if WoWKeybDB.currentProfile == BLIZZARD_DEFAULT_PROFILE then return end
+                if WoWKeyb.isApplyingProfile then return end
                 syncProfileSpellsFromActionBars(WoWKeybDB.currentProfile)
             end)
         end
