@@ -589,9 +589,21 @@ applyProfile = function(profile)
                 -- 2. Bind key to action bar slot
                 local command = SLOT_COMMANDS[slot]
                 if command then
-                    local bindingKey = layoutSlotToKey[slot] or wowKey
-                    local ok = SetBinding(bindingKey, command)
-                    if ok then applied = applied + 1 else skipped = skipped + 1 end
+                    local bindingKey
+                    if hasLayout then
+                        -- In layout mode, only bind keys explicitly assigned to the slot.
+                        -- This keeps unassigned slots unbound even if legacy keybind records still have keys.
+                        bindingKey = layoutSlotToKey[slot]
+                    else
+                        bindingKey = wowKey
+                    end
+
+                    if bindingKey and bindingKey ~= "" then
+                        local ok = SetBinding(bindingKey, command)
+                        if ok then applied = applied + 1 else skipped = skipped + 1 end
+                    else
+                        skipped = skipped + 1
+                    end
                 else
                     skipped = skipped + 1
                 end
