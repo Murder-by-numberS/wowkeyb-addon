@@ -999,90 +999,120 @@ local function serializeSyncedProfile(profileName, profile)
     return profileJson
 end
 
-local function buildViewerTextForProfile(profileName, profile)
-    if not profile then
-        return "Profile not found."
-    end
-
-    local lines = {}
-    local displayName = tostring(profile.name or profileName or "Unknown")
-    table.insert(lines, "Profile: " .. displayName)
-    table.insert(lines, "Class: " .. tostring(profile.class or "Unknown"))
-    table.insert(lines, "Spec: " .. tostring(profile.spec or "-"))
-    table.insert(lines, "Hero Talent: " .. tostring(profile.heroTalent or "-"))
-    table.insert(lines, "")
-    table.insert(lines, "=== Keyboard View (read-only) ===")
-
+local function buildViewerData(profile)
     local keyToSpell = {}
-    local keybinds = profile.keybinds or {}
+    local slotData = {}
+    local keybinds = profile and profile.keybinds or {}
+    local layoutBarIndexById = buildLayoutBarIndexById(profile)
+
     for _, kb in ipairs(keybinds) do
-        if kb and kb.key and kb.key ~= "" and not keyToSpell[kb.key] then
+        if kb and kb.key and kb.key ~= "" then
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or "")
-            keyToSpell[kb.key] = spellName ~= "" and spellName or "(no spell)"
-        end
-    end
+            local spellIcon = spell.icon
+            if not keyToSpell[kb.key] then
+                keyToSpell[kb.key] = {
+                    spellName = spellName ~= "" and spellName or "(no spell)",
+                    icon = spellIcon,
+                }
+            end
 
-    local keyboardRows = {
-        { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=" },
-        { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" },
-        { "A", "S", "D", "F", "G", "H", "J", "K", "L" },
-        { "Z", "X", "C", "V", "B", "N", "M" },
-    }
-
-    for _, row in ipairs(keyboardRows) do
-        local rowChunks = {}
-        for _, key in ipairs(row) do
-            local spellName = keyToSpell[key] or "-"
-            table.insert(rowChunks, string.format("[%s:%s]", key, spellName))
-        end
-        table.insert(lines, table.concat(rowChunks, " "))
-    end
-    table.insert(lines, "")
-
-    table.insert(lines, "=== Blizzard Action Bars (read-only) ===")
-    local layoutBarIndexById = buildLayoutBarIndexById(profile)
-    local slotData = {}
-
-    for _, kb in ipairs(keybinds) do
-        if kb and kb.key then
             local wowKey = normalizeKey(kb.key)
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
             if slot then
-                local spell = kb.spell or {}
-                local spellName = tostring(spell.name or "")
                 slotData[slot] = slotData[slot] or {
                     key = tostring(kb.key or ""),
-                    spell = spellName ~= "" and spellName or "(no spell)",
+                    spellName = spellName ~= "" and spellName or "(no spell)",
+                    icon = spellIcon,
                 }
             end
         end
     end
 
-    local bars = profile.layout and profile.layout.bars or {}
+    local bars = profile and profile.layout and profile.layout.bars or {}
     for barIdx = 1, 5 do
-        table.insert(lines, string.format("Bar %d:", barIdx))
         local bar = bars[barIdx]
         local slotKeys = (bar and type(bar.slotKeys) == "table") and bar.slotKeys or {}
-        local chunks = {}
         for slotIdx = 1, 12 do
             local globalSlot = ((barIdx - 1) * 12) + slotIdx
-            local s = slotData[globalSlot]
-            local key = ""
-            if s and s.key and s.key ~= "" then
-                key = s.key
+            local existing = slotData[globalSlot]
+            local fallbackKey = tostring(slotKeys[slotIdx] or "")
+            if existing then
+                if (not existing.key or existing.key == "") and fallbackKey ~= "" then
+                    existing.key = fallbackKey
+                end
             else
-                key = tostring(slotKeys[slotIdx] or "")
+                slotData[globalSlot] = {
+                    key = fallbackKey,
+                    spellName = "-",
+                    icon = nil,
+                }
             end
-            local spellName = (s and s.spell) or "-"
-            local cell = string.format("%02d[%s|%s]", slotIdx, key ~= "" and key or "-", spellName)
-            table.insert(chunks, cell)
         end
-        table.insert(lines, table.concat(chunks, "  "))
-        table.insert(lines, "")
     end
 
-    return table.concat(lines, "\n")
+    return keyToSpell, slotData
+end
+
+local function setViewerCell(cell, key, spellName, icon)
+    if not cell then return end
+    local cleanKey = (key and key ~= "") and key or "-"
+    local cleanSpell = (spellName and spellName ~= "") and spellName or "-"
+    cell.keyText:SetText(cleanKey)
+    cell.spellText:SetText(cleanSpell)
+    if icon and icon ~= "" then
+        cell.icon:SetTexture(icon)
+        cell.icon:Show()
+    else
+        cell.icon:SetTexture(nil)
+        cell.icon:Hide()
+    end
+end
+
+local function refreshViewerFrame(frame)
+    if not frame or not frame.profileName then return end
+    local profile = getStoredProfile(frame.profileName)
+    if not profile then return end
+
+    frame.metaText:SetText(string.format(
+        "Profile: %s    Class: %s    Spec: %s    Hero Talent: %s",
+        tostring(profile.name or frame.profileName or "Unknown"),
+        tostring(profile.class or "Unknown"),
+        tostring(profile.spec or "-"),
+        tostring(profile.heroTalent or "-")
+    ))
+
+    local keyToSpell, slotData = buildViewerData(profile)
+
+    local unknownKeys = {}
+    for key, cell in pairs(frame.keyboardCells) do
+        local data = keyToSpell[key]
+        if data then
+            setViewerCell(cell, key, data.spellName, data.icon)
+        else
+            setViewerCell(cell, key, "-", nil)
+        end
+    end
+    for key, data in pairs(keyToSpell) do
+        if not frame.keyboardCells[key] then
+            table.insert(unknownKeys, string.format("%s -> %s", key, data.spellName))
+        end
+    end
+    table.sort(unknownKeys)
+    frame.extraKeysText:SetText(
+        (#unknownKeys > 0)
+            and ("Other keys: " .. table.concat(unknownKeys, "  |  "))
+            or "Other keys: none"
+    )
+
+    for barIdx = 1, 5 do
+        for slotIdx = 1, 12 do
+            local globalSlot = ((barIdx - 1) * 12) + slotIdx
+            local data = slotData[globalSlot] or { key = "-", spellName = "-", icon = nil }
+            local cell = frame.barCells[barIdx][slotIdx]
+            setViewerCell(cell, data.key, data.spellName, data.icon)
+        end
+    end
 end
 
 local viewerFrame
@@ -1104,7 +1134,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
     if not viewerFrame then
         viewerFrame = CreateFrame("Frame", "WoWKeybViewerFrame", UIParent, "BackdropTemplate")
-        viewerFrame:SetSize(860, 560)
+        viewerFrame:SetSize(980, 640)
         viewerFrame:SetPoint("CENTER")
         viewerFrame:SetFrameStrata("DIALOG")
         viewerFrame:SetFrameLevel(120)
@@ -1128,37 +1158,148 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-        subtitle:SetText("Keyboard + action bar mapping for selected profile")
+        subtitle:SetText("Visual read-only keyboard and action bar mapping")
 
-        local scroll = CreateFrame("ScrollFrame", "WoWKeybViewerScroll", viewerFrame, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 20, -50)
-        scroll:SetPoint("BOTTOMRIGHT", -42, 58)
+        local metaText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
+        metaText:SetText("")
+        viewerFrame.metaText = metaText
 
-        local edit = CreateFrame("EditBox", "WoWKeybViewerEdit", scroll)
-        edit:SetSize(790, 460)
-        edit:SetMultiLine(true)
-        edit:SetAutoFocus(false)
-        edit:EnableKeyboard(true)
-        edit:EnableMouse(true)
-        edit:SetMaxLetters(0)
-        edit:SetFontObject("GameFontHighlightSmall")
-        edit:SetTextInsets(6, 6, 6, 6)
-        edit:SetScript("OnEscapePressed", function() viewerFrame:Hide() end)
-        edit:SetScript("OnEnterPressed", function(self) self:Insert("\n") end)
-        scroll:SetScrollChild(edit)
-        viewerFrame.editBox = edit
+        local keyboardTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        keyboardTitle:SetPoint("TOPLEFT", metaText, "BOTTOMLEFT", 0, -12)
+        keyboardTitle:SetText("Keyboard (base keys)")
+
+        local keyboardContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
+        keyboardContainer:SetPoint("TOPLEFT", keyboardTitle, "BOTTOMLEFT", 0, -6)
+        keyboardContainer:SetSize(940, 220)
+        if keyboardContainer.SetBackdrop then
+            keyboardContainer:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = false, edgeSize = 10,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            })
+            keyboardContainer:SetBackdropColor(0.05, 0.05, 0.06, 0.9)
+            keyboardContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
+        end
+
+        viewerFrame.keyboardCells = {}
+        local keyboardRows = {
+            { keys = { "1","2","3","4","5","6","7","8","9","0","-","=" }, indent = 12 },
+            { keys = { "Q","W","E","R","T","Y","U","I","O","P" }, indent = 44 },
+            { keys = { "A","S","D","F","G","H","J","K","L" }, indent = 62 },
+            { keys = { "Z","X","C","V","B","N","M" }, indent = 94 },
+        }
+
+        local keyW, keyH, gap = 66, 44, 6
+        for rowIdx, row in ipairs(keyboardRows) do
+            for colIdx, key in ipairs(row.keys) do
+                local cell = CreateFrame("Frame", nil, keyboardContainer, "BackdropTemplate")
+                cell:SetSize(keyW, keyH)
+                cell:SetPoint("TOPLEFT", row.indent + (colIdx - 1) * (keyW + gap), -10 - (rowIdx - 1) * (keyH + 8))
+                if cell.SetBackdrop then
+                    cell:SetBackdrop({
+                        bgFile = "Interface\\Buttons\\WHITE8X8",
+                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                        tile = false, edgeSize = 8,
+                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                    })
+                    cell:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
+                    cell:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
+                end
+
+                cell.icon = cell:CreateTexture(nil, "ARTWORK")
+                cell.icon:SetSize(18, 18)
+                cell.icon:SetPoint("LEFT", 4, 0)
+                cell.icon:Hide()
+
+                cell.keyText = cell:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                cell.keyText:SetPoint("TOPRIGHT", -4, -4)
+                cell.keyText:SetText(key)
+
+                cell.spellText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                cell.spellText:SetPoint("BOTTOMLEFT", 4, 4)
+                cell.spellText:SetPoint("RIGHT", -4, 0)
+                cell.spellText:SetJustifyH("LEFT")
+                cell.spellText:SetText("-")
+
+                viewerFrame.keyboardCells[key] = cell
+            end
+        end
+
+        local extraKeysText = keyboardContainer:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        extraKeysText:SetPoint("BOTTOMLEFT", 10, 8)
+        extraKeysText:SetPoint("BOTTOMRIGHT", -10, 8)
+        extraKeysText:SetJustifyH("LEFT")
+        extraKeysText:SetText("Other keys: none")
+        viewerFrame.extraKeysText = extraKeysText
+
+        local barsTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        barsTitle:SetPoint("TOPLEFT", keyboardContainer, "BOTTOMLEFT", 0, -12)
+        barsTitle:SetText("Blizzard Action Bars (1-5)")
+
+        local barsContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
+        barsContainer:SetPoint("TOPLEFT", barsTitle, "BOTTOMLEFT", 0, -6)
+        barsContainer:SetSize(940, 290)
+        if barsContainer.SetBackdrop then
+            barsContainer:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = false, edgeSize = 10,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            })
+            barsContainer:SetBackdropColor(0.05, 0.05, 0.06, 0.9)
+            barsContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
+        end
+
+        viewerFrame.barCells = {}
+        local slotSize, slotGap = 34, 4
+        for barIdx = 1, 5 do
+            local barLabel = barsContainer:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            barLabel:SetPoint("TOPLEFT", 10, -10 - (barIdx - 1) * 54)
+            barLabel:SetText("Bar " .. tostring(barIdx))
+
+            viewerFrame.barCells[barIdx] = {}
+            for slotIdx = 1, 12 do
+                local cell = CreateFrame("Frame", nil, barsContainer, "BackdropTemplate")
+                cell:SetSize(slotSize, slotSize)
+                cell:SetPoint("TOPLEFT", 70 + (slotIdx - 1) * (slotSize + slotGap), -6 - (barIdx - 1) * 54)
+                if cell.SetBackdrop then
+                    cell:SetBackdrop({
+                        bgFile = "Interface\\Buttons\\WHITE8X8",
+                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                        tile = false, edgeSize = 8,
+                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                    })
+                    cell:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
+                    cell:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
+                end
+
+                cell.icon = cell:CreateTexture(nil, "ARTWORK")
+                cell.icon:SetPoint("TOPLEFT", 2, -2)
+                cell.icon:SetPoint("BOTTOMRIGHT", -2, 2)
+                cell.icon:Hide()
+
+                cell.keyText = cell:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                cell.keyText:SetPoint("TOPLEFT", 2, -2)
+                cell.keyText:SetText("-")
+
+                cell.spellText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                cell.spellText:SetPoint("BOTTOMLEFT", 2, 2)
+                cell.spellText:SetPoint("BOTTOMRIGHT", -2, 2)
+                cell.spellText:SetJustifyH("LEFT")
+                cell.spellText:SetText("-")
+
+                viewerFrame.barCells[barIdx][slotIdx] = cell
+            end
+        end
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(120, 22)
         refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 20)
         refreshBtn:SetText("Refresh")
         refreshBtn:SetScript("OnClick", function()
-            if viewerFrame.profileName then
-                local p = getStoredProfile(viewerFrame.profileName)
-                WoWKeybViewerEdit:SetText(buildViewerTextForProfile(viewerFrame.profileName, p))
-                WoWKeybViewerEdit:SetFocus()
-                WoWKeybViewerEdit:HighlightText(0, 0)
-            end
+            refreshViewerFrame(viewerFrame)
         end)
 
         local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
@@ -1170,9 +1311,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
     viewerFrame.profileName = target
     viewerFrame:Show()
-    WoWKeybViewerEdit:SetText(buildViewerTextForProfile(target, profile))
-    WoWKeybViewerEdit:SetFocus()
-    WoWKeybViewerEdit:HighlightText(0, 0)
+    refreshViewerFrame(viewerFrame)
 end
 
 local exportFrame
