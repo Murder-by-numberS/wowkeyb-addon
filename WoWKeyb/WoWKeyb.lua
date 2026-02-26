@@ -727,43 +727,71 @@ applyProfile = function(profile)
         end
     end
 
-    -- Group by key (WoW allows one binding per key; use first spell if multiple)
-    local keyToData = {}
-    for _, keybind in ipairs(profile.keybinds) do
-        if keybind.key and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
-            local nk = normalizeKey(keybind.key)
-            if not keyToData[nk] then
-                keyToData[nk] = {
-                    spell = keybind.spell,
-                    preferredSlot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById),
-                }
+    local entries = {}
+    if hasLayout then
+        -- In layout mode, spell placement should follow resolved slot mapping even when
+        -- keybind.key is missing/empty, since bindings may come from layout.slotKeys.
+        local slotToData = {}
+        for _, keybind in ipairs(profile.keybinds) do
+            if keybind and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
+                local nk = normalizeKey(keybind.key or "")
+                local slot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById)
+                if slot and not slotToData[slot] then
+                    slotToData[slot] = {
+                        spell = keybind.spell,
+                        wowKey = nk,
+                        slot = slot,
+                    }
+                end
             end
         end
-    end
-
-    -- Assign slots for keys not in KEY_TO_SLOT (letters, etc.)
-    -- Sort keys for deterministic slot assignment
-    local sortedKeys = {}
-    for k in pairs(keyToData) do sortedKeys[#sortedKeys + 1] = k end
-    table.sort(sortedKeys)
-
-    local nextExtraSlot = 49
-    local keyToSlotMap = {}
-    for _, wowKey in ipairs(sortedKeys) do
-        local slot = keyToData[wowKey].preferredSlot
-        if not slot and (not hasLayout) and nextExtraSlot <= 60 then
-            slot = nextExtraSlot
-            nextExtraSlot = nextExtraSlot + 1
+        local sortedSlots = {}
+        for slot in pairs(slotToData) do sortedSlots[#sortedSlots + 1] = slot end
+        table.sort(sortedSlots)
+        for _, slot in ipairs(sortedSlots) do
+            entries[#entries + 1] = slotToData[slot]
         end
-        keyToSlotMap[wowKey] = slot
+    else
+        -- Non-layout mode keeps legacy key-first behavior.
+        local keyToData = {}
+        for _, keybind in ipairs(profile.keybinds) do
+            if keybind and keybind.key and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
+                local nk = normalizeKey(keybind.key)
+                if not keyToData[nk] then
+                    keyToData[nk] = {
+                        spell = keybind.spell,
+                        preferredSlot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById),
+                    }
+                end
+            end
+        end
+
+        local sortedKeys = {}
+        for k in pairs(keyToData) do sortedKeys[#sortedKeys + 1] = k end
+        table.sort(sortedKeys)
+
+        local nextExtraSlot = 49
+        for _, wowKey in ipairs(sortedKeys) do
+            local slot = keyToData[wowKey].preferredSlot
+            if not slot and nextExtraSlot <= 60 then
+                slot = nextExtraSlot
+                nextExtraSlot = nextExtraSlot + 1
+            end
+            entries[#entries + 1] = {
+                spell = keyToData[wowKey].spell,
+                wowKey = wowKey,
+                slot = slot,
+            }
+        end
     end
 
     local applied = 0
     local skipped = 0
 
-    for _, wowKey in ipairs(sortedKeys) do
-        local spell = keyToData[wowKey].spell
-        local slot = keyToSlotMap[wowKey]
+    for _, entry in ipairs(entries) do
+        local spell = entry.spell
+        local slot = entry.slot
+        local wowKey = entry.wowKey
         if not slot then
             skipped = skipped + 1
         else
@@ -1147,22 +1175,10 @@ local function refreshViewerFrame(frame)
 
     local keyToEntries, slotData = buildViewerData(profile)
 
-    local unknownKeys = {}
     for key, cell in pairs(frame.keyboardCells) do
         local entries = keyToEntries[key] or {}
         setKeyboardViewerCell(cell, key, entries)
     end
-    for key, entries in pairs(keyToEntries) do
-        if not frame.keyboardCells[key] then
-            table.insert(unknownKeys, string.format("%s (%d)", key, #entries))
-        end
-    end
-    table.sort(unknownKeys)
-    frame.extraKeysText:SetText(
-        (#unknownKeys > 0)
-            and ("Other keys: " .. table.concat(unknownKeys, "  |  "))
-            or "Other keys: none"
-    )
 
     for barIdx = 1, 5 do
         for slotIdx = 1, 12 do
@@ -1304,20 +1320,14 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
             end
         end
 
-        local extraKeysText = keyboardContainer:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        extraKeysText:SetPoint("BOTTOMLEFT", 10, 8)
-        extraKeysText:SetPoint("BOTTOMRIGHT", -10, 8)
-        extraKeysText:SetJustifyH("LEFT")
-        extraKeysText:SetText("Other keys: none")
-        viewerFrame.extraKeysText = extraKeysText
-
         local barsTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         barsTitle:SetPoint("TOPLEFT", keyboardContainer, "BOTTOMLEFT", 0, -12)
         barsTitle:SetText("Blizzard Action Bars (1-5)")
 
         local barsContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
         barsContainer:SetPoint("TOPLEFT", barsTitle, "BOTTOMLEFT", 0, -6)
-        barsContainer:SetSize(940, 290)
+        -- Keep a larger footer gap so the bottom action bar never overlaps controls.
+        barsContainer:SetSize(940, 248)
         if barsContainer.SetBackdrop then
             barsContainer:SetBackdrop({
                 bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -1373,7 +1383,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(120, 22)
-        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 20)
+        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 14)
         refreshBtn:SetText("Refresh")
         refreshBtn:SetScript("OnClick", function()
             refreshViewerFrame(viewerFrame)
@@ -1381,7 +1391,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
-        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -90, 20)
+        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -90, 14)
         closeBtn:SetText("Close")
         closeBtn:SetScript("OnClick", function() viewerFrame:Hide() end)
     end
