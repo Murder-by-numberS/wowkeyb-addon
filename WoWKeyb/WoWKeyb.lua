@@ -410,6 +410,172 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     return KEY_TO_SLOT[wowKey]
 end
 
+local function readSpellFromActionSlot(slot)
+    if not slot or slot < 1 or slot > 120 then
+        return nil
+    end
+
+    local actionType, actionId = GetActionInfo(slot)
+    if actionType ~= "spell" or not actionId then
+        return nil
+    end
+
+    local spellName, _, spellIcon = GetSpellInfo(actionId)
+    if C_Spell and C_Spell.GetSpellName then
+        spellName = C_Spell.GetSpellName(actionId) or spellName
+    end
+    if C_Spell and C_Spell.GetSpellTexture then
+        spellIcon = C_Spell.GetSpellTexture(actionId) or spellIcon
+    end
+
+    return {
+        spellId = tostring(actionId),
+        name = spellName or "",
+        icon = spellIcon or "",
+    }
+end
+
+local function syncProfileSpellsFromActionBars(profileName)
+    ensureDBDefaults()
+    local targetName = profileName or WoWKeybDB.currentProfile
+    if not targetName or targetName == BLIZZARD_DEFAULT_PROFILE then
+        return false, 0
+    end
+
+    local profile = getStoredProfile(targetName)
+    if not profile or type(profile.keybinds) ~= "table" then
+        return false, 0
+    end
+
+    local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    local changed = 0
+
+    for _, keybind in ipairs(profile.keybinds) do
+        if keybind and keybind.key then
+            local wowKey = normalizeKey(keybind.key)
+            local slot = resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
+            if slot then
+                local currentSpell = keybind.spell or {}
+                local barSpell = readSpellFromActionSlot(slot)
+                if barSpell then
+                    local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
+                    local prevName = tostring(currentSpell.name or "")
+                    local prevIcon = tostring(currentSpell.icon or "")
+                    if prevId ~= barSpell.spellId or prevName ~= barSpell.name or prevIcon ~= barSpell.icon then
+                        keybind.spell = {
+                            spellId = barSpell.spellId,
+                            name = barSpell.name,
+                            icon = barSpell.icon,
+                            description = currentSpell.description or "",
+                        }
+                        changed = changed + 1
+                    end
+                else
+                    local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
+                    local prevName = tostring(currentSpell.name or "")
+                    local prevIcon = tostring(currentSpell.icon or "")
+                    if prevId ~= "" or prevName ~= "" or prevIcon ~= "" then
+                        keybind.spell = {
+                            spellId = "",
+                            name = "",
+                            icon = "",
+                            description = currentSpell.description or "",
+                        }
+                        changed = changed + 1
+                    end
+                end
+            end
+        end
+    end
+
+    return true, changed
+end
+
+local function wowBindingToProfileKey(bindingKey)
+    if not bindingKey or bindingKey == "" then
+        return ""
+    end
+
+    -- Convert WoW binding format (CTRL-SHIFT-E) to profile format (Ctrl+Shift+E).
+    local key = tostring(bindingKey):upper()
+    key = key:gsub("CTRL%-", "Ctrl+")
+    key = key:gsub("SHIFT%-", "Shift+")
+    key = key:gsub("ALT%-", "Alt+")
+    return key
+end
+
+local function firstBindingForCommand(command)
+    if not command or command == "" then
+        return nil
+    end
+    local keys = { GetBindingKey(command) }
+    for _, key in ipairs(keys) do
+        if key and key ~= "" then
+            return key
+        end
+    end
+    return nil
+end
+
+local function syncProfileLayoutKeysFromBindings(profileName)
+    ensureDBDefaults()
+    local targetName = profileName or WoWKeybDB.currentProfile
+    if not targetName or targetName == BLIZZARD_DEFAULT_PROFILE then
+        return false, 0
+    end
+
+    local profile = getStoredProfile(targetName)
+    if not profile or not profile.layout or type(profile.layout.bars) ~= "table" then
+        return false, 0
+    end
+
+    local changed = 0
+    for barIdx, bar in ipairs(profile.layout.bars) do
+        if type(bar) == "table" then
+            local slots = tonumber(bar.slots) or 12
+            slots = math.min(math.max(1, slots), 12)
+            bar.slotKeys = type(bar.slotKeys) == "table" and bar.slotKeys or {}
+            for slotIdx = 1, slots do
+                local globalSlot = ((barIdx - 1) * 12) + slotIdx
+                local command = SLOT_COMMANDS[globalSlot]
+                if command then
+                    local wowKey = firstBindingForCommand(command)
+                    local profileKey = wowBindingToProfileKey(wowKey)
+                    local prev = tostring(bar.slotKeys[slotIdx] or "")
+                    if prev ~= profileKey then
+                        bar.slotKeys[slotIdx] = profileKey
+                        changed = changed + 1
+                    end
+                end
+            end
+        end
+    end
+
+    -- Keep keybind entries aligned with slot key assignments so export/reimport is stable.
+    local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    if type(profile.keybinds) == "table" then
+        for _, keybind in ipairs(profile.keybinds) do
+            if keybind then
+                local wowKey = normalizeKey(keybind.key or "")
+                local slot = resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
+                if slot then
+                    local barIndex = math.floor((slot - 1) / 12) + 1
+                    local slotIndex = ((slot - 1) % 12) + 1
+                    local bar = profile.layout.bars[barIndex]
+                    local slotKey = (bar and bar.slotKeys and bar.slotKeys[slotIndex]) or ""
+                    local prev = tostring(keybind.key or "")
+                    if prev ~= slotKey then
+                        keybind.key = slotKey
+                        changed = changed + 1
+                    end
+                end
+            end
+        end
+    end
+
+    return true, changed
+end
+
 local function ensureBlizzardBarsVisible()
     pcall(function() SetCVar("alwaysShowActionBars", "1") end)
     pcall(function() SetCVar("showMultiActionBar1", "1") end)
@@ -841,6 +1007,11 @@ function WoWKeyb:ShowExportDialog(profileName)
         print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(profileName))
         return
     end
+
+    -- Export should reflect current in-game bars/bindings so users can round-trip
+    -- from game -> addon export -> web import without losing edits.
+    syncProfileSpellsFromActionBars(profileName)
+    syncProfileLayoutKeysFromBindings(profileName)
 
     local json, err = serializeSyncedProfile(profileName, profile)
     if not json then
@@ -1541,6 +1712,16 @@ do
         if event == "PLAYER_LOGIN" then
             createSettingsPanel()
             createMinimapButton()
+
+            -- Keep stored profile spells in sync with manual bar changes in-game.
+            local syncFrame = CreateFrame("Frame")
+            syncFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+            syncFrame:SetScript("OnEvent", function(_, _, slot)
+                if not slot then return end
+                if not WoWKeybDB or not WoWKeybDB.currentProfile then return end
+                if WoWKeybDB.currentProfile == BLIZZARD_DEFAULT_PROFILE then return end
+                syncProfileSpellsFromActionBars(WoWKeybDB.currentProfile)
+            end)
         end
     end)
 end
