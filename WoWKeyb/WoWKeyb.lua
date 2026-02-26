@@ -1014,6 +1014,7 @@ local function buildViewerData(profile)
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
             keyToEntries[kb.key] = keyToEntries[kb.key] or {}
             table.insert(keyToEntries[kb.key], {
+                key = tostring(kb.key or ""),
                 spellName = spellName ~= "" and spellName or "(no spell)",
                 icon = spellIcon,
                 slot = slot,
@@ -1057,9 +1058,9 @@ end
 local function setBarViewerCell(cell, key, spellName, icon)
     if not cell then return end
     local cleanKey = (key and key ~= "") and key or "-"
-    local cleanSpell = (spellName and spellName ~= "") and spellName or "-"
     cell.keyText:SetText(cleanKey)
-    cell.spellText:SetText(cleanSpell)
+    -- Bars should be icon/key focused; ability names are shown on hover in keyboard.
+    cell.spellText:SetText("")
     if icon and icon ~= "" then
         cell.icon:SetTexture(icon)
         cell.icon:Show()
@@ -1095,7 +1096,11 @@ local function showKeyboardCellTooltip(cell)
             end
             local name = entry.spellName or "(no spell)"
             local slotLabel = slotToBarSlotLabel(entry.slot)
-            GameTooltip:AddLine(string.format("%s%s - %s", iconPrefix, name, slotLabel), 0.95, 0.95, 0.95)
+            local keyLabel = tostring(entry.key or key or "-")
+            GameTooltip:AddLine(
+                string.format("%s%s - %s - Bind: %s", iconPrefix, name, slotLabel, keyLabel),
+                0.95, 0.95, 0.95
+            )
         end
     end
     GameTooltip:Show()
@@ -1277,11 +1282,21 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 cell.countText:Hide()
 
                 cell:SetScript("OnEnter", function(self)
-                    self:SetScale(1.15)
+                    if self.SetBackdropColor then
+                        self:SetBackdropColor(0.18, 0.18, 0.22, 0.98)
+                    end
+                    if self.SetBackdropBorderColor then
+                        self:SetBackdropBorderColor(0.6, 0.6, 0.75, 1)
+                    end
                     showKeyboardCellTooltip(self)
                 end)
                 cell:SetScript("OnLeave", function(self)
-                    self:SetScale(1.0)
+                    if self.SetBackdropColor then
+                        self:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
+                    end
+                    if self.SetBackdropBorderColor then
+                        self:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
+                    end
                     GameTooltip:Hide()
                 end)
 
