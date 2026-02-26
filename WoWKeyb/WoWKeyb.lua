@@ -48,6 +48,37 @@ local function normalizeKey(key)
     return key:gsub("%+", "-"):upper()
 end
 
+local function normalizeClassName(value)
+    if not value then return nil end
+    local normalized = tostring(value):lower():gsub("[%s%-%_]", "")
+    if normalized == "" then return nil end
+    return normalized
+end
+
+local function profileMatchesCurrentClass(profile)
+    if not profile then return true end
+
+    local profileClass = normalizeClassName(profile.class)
+    if not profileClass then
+        -- Backward compatibility for older profiles that did not include class.
+        return true
+    end
+
+    local localizedClass, englishClass, classToken = UnitClass("player")
+    local playerVariants = {
+        normalizeClassName(localizedClass),
+        normalizeClassName(englishClass),
+        normalizeClassName(classToken),
+    }
+
+    for _, variant in ipairs(playerVariants) do
+        if variant and variant == profileClass then
+            return true
+        end
+    end
+    return false
+end
+
 -- Display key labels similar to Blizzard action bar hotkeys.
 local function formatHotkeyLabel(key)
     if not key or key == "" then return "" end
@@ -467,6 +498,16 @@ applyProfile = function(profile)
         return false, "No keybinds in profile"
     end
 
+    if not profileMatchesCurrentClass(profile) then
+        local _, englishClass, classToken = UnitClass("player")
+        local playerClass = englishClass or classToken or "Unknown"
+        return false, string.format(
+            "Profile class mismatch: profile is %s, current character is %s",
+            tostring(profile.class or "unknown"),
+            tostring(playerClass)
+        )
+    end
+
     if InCombatLockdown() then
         return false, "Cannot apply keybindings while in combat"
     end
@@ -574,14 +615,23 @@ applyProfile = function(profile)
                 skipped = skipped + 1
             else
                 -- 1. Place spell on action bar (default WoW UI)
-                pcall(function()
-                    if spellId then
+                local pickedUp = false
+                if spellId then
+                    pcall(function()
                         PickupSpell(spellId)
+                    end)
+                    pickedUp = GetCursorInfo() ~= nil
+                end
+                if (not pickedUp) and spellName and spellName ~= "" then
+                    if spellId then
+                        PickupSpell(spellName)
                     else
                         PickupSpell(spellName)
                     end
-                end)
-                if GetCursorInfo() then
+                    pickedUp = GetCursorInfo() ~= nil
+                end
+
+                if pickedUp then
                     PlaceAction(slot)
                     ClearCursor()
                 end
@@ -1335,7 +1385,16 @@ function WoWKeyb:ShowImportDialog(profileName)
                         WoWKeybDB.currentProfile = importedName
                     end
 
+                    -- Apply immediately so imported profile takes effect without requiring
+                    -- a manual dropdown cycle.
+                    local okApply, resultApply = applySelectionByName(importedName)
+
                     print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
+                    if okApply then
+                        print("|cff00ff00[WoWKeyb]|r " .. tostring(resultApply))
+                    else
+                        print("|cffff0000[WoWKeyb]|r Imported but failed to apply: " .. tostring(resultApply or "Unknown error"))
+                    end
                     if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
                         WoWKeyb.optionsPanel.refreshCurrentProfileText()
                     end
