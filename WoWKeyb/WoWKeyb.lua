@@ -423,17 +423,37 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     if keybind and keybind.barId and (keybind.slotIndex or keybind.slot_index) ~= nil then
         local barIdx = layoutBarIndexById[keybind.barId]
         local rawSlotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
-        local slotIdx = nil
-        -- Support both legacy zero-based (0-11) and one-based (1-12) slot indexing.
-        if rawSlotIdx and rawSlotIdx >= 0 and rawSlotIdx <= 11 then
-            slotIdx = rawSlotIdx
-        elseif rawSlotIdx and rawSlotIdx >= 1 and rawSlotIdx <= 12 then
-            slotIdx = rawSlotIdx - 1
-        end
-        if barIdx ~= nil and slotIdx ~= nil then
-            local slot = (barIdx * 12) + slotIdx + 1
-            if slot >= 1 and slot <= 60 then
-                return slot
+        if barIdx ~= nil and rawSlotIdx then
+            local candidates = {}
+            local seen = {}
+            local function addCandidate(idx)
+                if idx and idx >= 0 and idx <= 11 and not seen[idx] then
+                    candidates[#candidates + 1] = idx
+                    seen[idx] = true
+                end
+            end
+
+            -- Support both legacy zero-based (0-11) and one-based (1-12) slot indexing.
+            addCandidate(rawSlotIdx)
+            addCandidate(rawSlotIdx - 1)
+
+            if #candidates > 0 then
+                -- If we have layout + key, prefer the candidate whose layout slotKey matches key.
+                local bar = hasLayout and profile.layout and profile.layout.bars and profile.layout.bars[barIdx + 1] or nil
+                if bar and type(bar.slotKeys) == "table" and wowKey and wowKey ~= "" then
+                    for _, candidate in ipairs(candidates) do
+                        local slotKey = normalizeKey(bar.slotKeys[candidate + 1] or "")
+                        if slotKey == wowKey then
+                            return (barIdx * 12) + candidate + 1
+                        end
+                    end
+                end
+
+                -- Fall back to first valid candidate.
+                local slot = (barIdx * 12) + candidates[1] + 1
+                if slot >= 1 and slot <= 60 then
+                    return slot
+                end
             end
         end
     end
@@ -482,6 +502,111 @@ local function readSpellFromActionSlot(slot)
         name = spellName or "",
         icon = spellIcon or "",
     }
+end
+
+local function normalizeSpellText(value)
+    local s = tostring(value or ""):lower()
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    s = s:gsub("%s+", " ")
+    return s
+end
+
+local function parseMacroSpellData(body)
+    local parsed = {
+        spellIds = {},
+        spellNames = {},
+    }
+    if not body or body == "" then
+        return parsed
+    end
+
+    local function registerToken(rawToken)
+        local token = tostring(rawToken or "")
+        token = token:gsub("^%s+", ""):gsub("%s+$", "")
+        token = token:gsub("^!+", "")
+        token = token:gsub("^reset=[^,%s;]+%s*", "")
+        token = token:gsub("^@[^%s]+%s*", "")
+        token = token:gsub("^target=[^%s]+%s*", "")
+        token = token:gsub("^%s+", ""):gsub("%s+$", "")
+        if token == "" then return end
+
+        local spellId = token:match("spell:(%d+)")
+        if spellId then
+            parsed.spellIds[tonumber(spellId)] = true
+            return
+        end
+
+        local numericToken = token:match("^(%d+)$")
+        if numericToken then
+            parsed.spellIds[tonumber(numericToken)] = true
+            return
+        end
+
+        local normalizedName = normalizeSpellText(token)
+        if normalizedName ~= "" then
+            parsed.spellNames[normalizedName] = true
+        end
+    end
+
+    for line in tostring(body):gmatch("[^\r\n]+") do
+        local trimmed = line:gsub("^%s+", ""):gsub("%s+$", "")
+        local lower = trimmed:lower()
+
+        if lower:find("^#showtooltip", 1, true) then
+            local arg = trimmed:gsub("^#showtooltip%s*", "")
+            local normalized = arg:gsub("%b[]", " ")
+            for part in normalized:gmatch("[^,;]+") do
+                registerToken(part)
+            end
+        elseif lower:find("^/castsequence", 1, true) then
+            local arg = trimmed:gsub("^/castsequence%s*", "")
+            local normalized = arg:gsub("%b[]", " ")
+            for part in normalized:gmatch("[^,;]+") do
+                registerToken(part)
+            end
+        elseif lower:find("^/cast", 1, true) or lower:find("^/use", 1, true) then
+            local arg = trimmed:gsub("^/%S+%s*", "")
+            local normalized = arg:gsub("%b[]", " ")
+            for part in normalized:gmatch("[^,;]+") do
+                registerToken(part)
+            end
+        end
+    end
+
+    return parsed
+end
+
+local function actionSlotMacroContainsSpell(actionSlot, spellId, spellName, parseCache)
+    if not actionSlot or actionSlot < 1 then return false end
+    if type(GetMacroInfo) ~= "function" then return false end
+    local actionType, actionId = GetActionInfo(actionSlot)
+    if actionType ~= "macro" or not actionId then
+        return false
+    end
+
+    local _, _, body = GetMacroInfo(actionId)
+    if not body or body == "" then
+        return false
+    end
+
+    local cacheKey = tostring(actionId) .. ":" .. tostring(body)
+    if not parseCache[cacheKey] then
+        parseCache[cacheKey] = parseMacroSpellData(body)
+    end
+    local parsed = parseCache[cacheKey]
+    if not parsed then return false end
+
+    local targetId = tonumber(spellId)
+    if targetId and parsed.spellIds[targetId] then
+        return true
+    end
+
+    local targetName = normalizeSpellText(spellName)
+    if targetName ~= "" and parsed.spellNames[targetName] then
+        return true
+    end
+
+    return false
 end
 
 local function syncProfileSpellsFromActionBars(profileName)
@@ -856,6 +981,7 @@ applyProfile = function(profile)
 
     local applied = 0
     local skipped = 0
+    local macroParseCache = {}
 
     for _, entry in ipairs(entries) do
         local spell = entry.spell
@@ -875,26 +1001,31 @@ applyProfile = function(profile)
             if (not spellId and not spellName) or spellName == "" then
                 skipped = skipped + 1
             else
-                -- 1. Place spell on action bar (default WoW UI)
-                local pickedUp = false
-                if spellId and type(PickupSpell) == "function" then
-                    pcall(function()
-                        PickupSpell(spellId)
-                    end)
-                    pickedUp = GetCursorInfo() ~= nil
-                end
-                if (not pickedUp) and spellName and spellName ~= "" and type(PickupSpell) == "function" then
-                    if spellId then
-                        PickupSpell(spellName)
-                    else
-                        PickupSpell(spellName)
-                    end
-                    pickedUp = GetCursorInfo() ~= nil
-                end
+                local actionSlot = toBlizzardActionSlot(slot)
+                local keepMacro = actionSlotMacroContainsSpell(actionSlot, spellId, spellName, macroParseCache)
 
-                if pickedUp then
-                    PlaceAction(toBlizzardActionSlot(slot))
-                    ClearCursor()
+                -- 1. Place spell on action bar (default WoW UI)
+                if not keepMacro then
+                    local pickedUp = false
+                    if spellId and type(PickupSpell) == "function" then
+                        pcall(function()
+                            PickupSpell(spellId)
+                        end)
+                        pickedUp = GetCursorInfo() ~= nil
+                    end
+                    if (not pickedUp) and spellName and spellName ~= "" and type(PickupSpell) == "function" then
+                        if spellId then
+                            PickupSpell(spellName)
+                        else
+                            PickupSpell(spellName)
+                        end
+                        pickedUp = GetCursorInfo() ~= nil
+                    end
+
+                    if pickedUp then
+                        PlaceAction(actionSlot)
+                        ClearCursor()
+                    end
                 end
 
                 -- 2. Bind key to action bar slot
@@ -1124,7 +1255,7 @@ local function buildViewerData(profile)
     end
 
     for _, kb in ipairs(keybinds) do
-        if kb and kb.spell and (kb.spell.spellId or kb.spell.name) then
+        if kb and kb.spell and (kb.spell.spellId or kb.spell.spell_id or kb.spell.name) then
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or "")
             local spellIcon = spell.icon
