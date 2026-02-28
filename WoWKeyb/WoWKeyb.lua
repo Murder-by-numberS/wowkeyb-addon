@@ -96,6 +96,70 @@ local function profileMatchesCurrentClass(profile)
     return false
 end
 
+local function profileMatchesCurrentSpecAndHero(profile)
+    if not profile then return true end
+
+    local profileSpec = normalizeClassName(profile.spec)
+    if profileSpec then
+        local currentSpecVariants = {}
+        local specIndex = GetSpecialization and GetSpecialization() or nil
+        if specIndex and GetSpecializationInfo then
+            local specId, specName = GetSpecializationInfo(specIndex)
+            currentSpecVariants = {
+                normalizeClassName(specName),
+                normalizeClassName(specId),
+            }
+        end
+
+        local specMatch = false
+        for _, variant in ipairs(currentSpecVariants) do
+            if variant and variant == profileSpec then
+                specMatch = true
+                break
+            end
+        end
+        if not specMatch then
+            return false
+        end
+    end
+
+    local profileHeroTalent = normalizeClassName(profile.heroTalent)
+    if profileHeroTalent then
+        local heroVariants = {}
+        if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+            local okHero, heroSpecId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+            if okHero and heroSpecId then
+                heroVariants[#heroVariants + 1] = normalizeClassName(heroSpecId)
+                if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
+                    local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, heroSpecId)
+                    if okInfo and type(heroInfo) == "table" then
+                        heroVariants[#heroVariants + 1] = normalizeClassName(heroInfo.name)
+                        heroVariants[#heroVariants + 1] = normalizeClassName(heroInfo.heroTalentName)
+                    end
+                end
+            end
+        end
+
+        -- If we can't confidently read current hero talent, avoid syncing to prevent corruption.
+        if #heroVariants == 0 then
+            return false
+        end
+
+        local heroMatch = false
+        for _, variant in ipairs(heroVariants) do
+            if variant and variant == profileHeroTalent then
+                heroMatch = true
+                break
+            end
+        end
+        if not heroMatch then
+            return false
+        end
+    end
+
+    return true
+end
+
 -- Display key labels similar to Blizzard action bar hotkeys.
 local function formatHotkeyLabel(key)
     if not key or key == "" then return "" end
@@ -620,6 +684,12 @@ local function syncProfileSpellsFromActionBars(profileName)
     if not profile or type(profile.keybinds) ~= "table" then
         return false, 0
     end
+    if not profileMatchesCurrentClass(profile) then
+        return false, 0
+    end
+    if not profileMatchesCurrentSpecAndHero(profile) then
+        return false, 0
+    end
 
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
     local changed = 0
@@ -840,6 +910,13 @@ applyProfile = function(profile)
             "Profile class mismatch: profile is %s, current character is %s",
             tostring(profile.class or "unknown"),
             tostring(playerClass)
+        )
+    end
+    if not profileMatchesCurrentSpecAndHero(profile) then
+        return false, string.format(
+            "Profile spec/hero mismatch: profile is %s / %s",
+            tostring(profile.spec or "unknown"),
+            tostring(profile.heroTalent or "unknown")
         )
     end
 
@@ -1127,10 +1204,16 @@ getStoredProfile = function(profileName)
 end
 
 -- List stored profiles
-local function listStoredProfiles()
+local function listStoredProfiles(onlyCurrentCharacterContext)
     local list = {}
-    for name, _ in pairs(WoWKeybDB.profiles) do
-        table.insert(list, name)
+    for name, profile in pairs(WoWKeybDB.profiles) do
+        local include = true
+        if onlyCurrentCharacterContext then
+            include = profileMatchesCurrentClass(profile) and profileMatchesCurrentSpecAndHero(profile)
+        end
+        if include then
+            table.insert(list, name)
+        end
     end
     table.sort(list)
     return list
@@ -1775,7 +1858,7 @@ local function createSettingsPanel()
     UIDropDownMenu_SetWidth(profileDropdown, 220)
 
     local function refreshProfileSelector()
-        local profiles = listStoredProfiles()
+        local profiles = listStoredProfiles(true)
         local selectorOptions = { BLIZZARD_DEFAULT_PROFILE }
         for _, name in ipairs(profiles) do
             table.insert(selectorOptions, name)
@@ -2012,11 +2095,11 @@ local function slashHandler(msg)
         if arg == "" then
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb apply <profile name>")
             print("|cff00ff00[WoWKeyb]|r Default profile: " .. BLIZZARD_DEFAULT_PROFILE)
-            local list = listStoredProfiles()
+            local list = listStoredProfiles(true)
             if #list > 0 then
                 print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
             else
-                print("|cff00ff00[WoWKeyb]|r No stored profiles. Use /wowkeyb import <profile name> to paste JSON first.")
+                print("|cff00ff00[WoWKeyb]|r No matching profiles for this character context. Use /wowkeyb import <profile name> to paste JSON first.")
             end
             return
         end
@@ -2038,9 +2121,9 @@ local function slashHandler(msg)
         return
 
     elseif cmd == "list" or cmd == "l" then
-        local list = listStoredProfiles()
+        local list = listStoredProfiles(true)
         if #list == 0 then
-            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
+            print("|cff00ff00[WoWKeyb]|r No matching profiles for this character context.")
         else
             print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
         end
@@ -2227,31 +2310,58 @@ function WoWKeyb:ShowImportDialog(profileName)
                     decoded.name = importedName
                     WoWKeybDB.profiles[importedName] = decoded
 
-                    -- Set imported profile as current so "Apply Current Profile" works immediately.
-                    if WoWKeybDB.currentProfile ~= importedName then
-                        WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-                        WoWKeybDB.currentProfile = importedName
-                    end
-
-                    -- Apply immediately so imported profile takes effect without requiring
-                    -- a manual dropdown cycle.
-                    local okApply, resultApply = applySelectionByName(importedName)
-
                     print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
-                    if okApply then
-                        print("|cff00ff00[WoWKeyb]|r " .. tostring(resultApply))
+
+                    local classMatch = profileMatchesCurrentClass(decoded)
+                    local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded)
+                    local canOfferApply = classMatch and specHeroMatch
+
+                    if not canOfferApply then
+                        local mismatchReason = "class/spec/hero mismatch"
+                        if not classMatch then
+                            mismatchReason = "class mismatch"
+                        elseif not specHeroMatch then
+                            mismatchReason = "spec/hero mismatch"
+                        end
+                        print("|cffffcc00[WoWKeyb]|r Imported profile but did not apply (" .. mismatchReason .. ").")
                     else
-                        print("|cffff0000[WoWKeyb]|r Imported but failed to apply: " .. tostring(resultApply or "Unknown error"))
+                        if not StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] then
+                            StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] = {
+                                text = "Apply imported profile \"%s\" now?",
+                                button1 = "Apply",
+                                button2 = "Not now",
+                                OnAccept = function(_, data)
+                                    local okApply, resultApply = applySelectionByName(data)
+                                    if okApply then
+                                        print("|cff00ff00[WoWKeyb]|r " .. tostring(resultApply))
+                                    else
+                                        print("|cffff0000[WoWKeyb]|r Failed to apply imported profile: " .. tostring(resultApply or "Unknown error"))
+                                    end
+                                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
+                                        WoWKeyb.optionsPanel.refreshCurrentProfileText()
+                                    end
+                                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
+                                        WoWKeyb.optionsPanel.refreshProfileSelector()
+                                    end
+                                    if viewerFrame and viewerFrame:IsShown() then
+                                        viewerFrame.profileName = data
+                                        refreshViewerFrame(viewerFrame)
+                                    end
+                                end,
+                                timeout = 0,
+                                whileDead = true,
+                                hideOnEscape = true,
+                                preferredIndex = 3,
+                            }
+                        end
+                        StaticPopup_Show("WOWKEYB_IMPORT_APPLY_CONFIRM", importedName, nil, importedName)
                     end
+
                     if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
                         WoWKeyb.optionsPanel.refreshCurrentProfileText()
                     end
                     if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
                         WoWKeyb.optionsPanel.refreshProfileSelector()
-                    end
-                    if viewerFrame and viewerFrame:IsShown() then
-                        viewerFrame.profileName = importedName
-                        refreshViewerFrame(viewerFrame)
                     end
                     importFrame:Hide()
                 else
