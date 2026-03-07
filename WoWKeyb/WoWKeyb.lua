@@ -1268,7 +1268,7 @@ applyProfile = function(profile)
             tostring(playerClass)
         )
     end
-    if not profileMatchesCurrentSpecAndHero(profile, "apply") then
+    if not profileMatchesCurrentSpecAndHero(profile) then
         return false, string.format(
             "Profile spec/hero mismatch: profile is %s / %s (run /wowkeyb debugmatch \"%s\")",
             tostring(profile.spec or "unknown"),
@@ -1576,6 +1576,11 @@ local function listStoredProfiles(onlyCurrentCharacterContext)
     return list
 end
 
+local function shouldAnnounceContextAutoSwitch(triggerEvent)
+    return triggerEvent == "PLAYER_SPECIALIZATION_CHANGED"
+        or triggerEvent == "ACTIVE_TALENT_GROUP_CHANGED"
+end
+
 local function enforceCurrentProfileForPlayerContext(triggerEvent)
     ensureDBDefaults()
     local current = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
@@ -1619,12 +1624,17 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
 
     local ok, result = applySelectionByName(target)
     if ok then
+        local announce = shouldAnnounceContextAutoSwitch(triggerEvent)
         if target == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffffcc00[WoWKeyb]|r No matching WoWKeyb profile for current class/spec/hero after "
-                .. tostring(triggerEvent or "context change")
-                .. "; switched to Blizzard Default.")
+            if announce then
+                print("|cffffcc00[WoWKeyb]|r No matching WoWKeyb profile for current class/spec/hero after "
+                    .. tostring(triggerEvent or "context change")
+                    .. "; switched to Blizzard Default.")
+            end
         else
-            print("|cff00ff00[WoWKeyb]|r Auto-selected profile for current class/spec/hero (" .. tostring(targetReason) .. "): " .. tostring(target))
+            if announce then
+                print("|cff00ff00[WoWKeyb]|r Auto-selected profile for current class/spec/hero (" .. tostring(targetReason) .. "): " .. tostring(target))
+            end
         end
     else
         print("|cffff0000[WoWKeyb]|r Failed to apply context profile " .. tostring(target) .. ": " .. tostring(result or "unknown error"))
@@ -3043,8 +3053,8 @@ function WoWKeyb:ShowImportDialog(profileName)
 
                     print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
 
-                    local classMatch = profileMatchesCurrentClass(decoded, "import")
-                    local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded, "import")
+                    local classMatch = profileMatchesCurrentClass(decoded)
+                    local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded)
                     local canOfferApply = classMatch and specHeroMatch
 
                     if not canOfferApply then
