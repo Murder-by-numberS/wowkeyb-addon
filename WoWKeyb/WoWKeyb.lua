@@ -3073,53 +3073,87 @@ function WoWKeyb:ShowImportDialog(profileName)
                         importedName = tostring(decoded.name)
                     end
 
-                    -- Persist the canonical storage key in the profile payload for consistency.
-                    decoded.name = importedName
-                    WoWKeybDB.profiles[importedName] = decoded
+                    local function completeImport(targetName)
+                        decoded.name = targetName
+                        WoWKeybDB.profiles[targetName] = decoded
 
-                    print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
+                        print("|cff00ff00[WoWKeyb]|r Imported profile: " .. targetName)
 
-                    local classMatch = profileMatchesCurrentClass(decoded)
-                    local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded)
-                    local canOfferApply = classMatch and specHeroMatch
+                        local classMatch = profileMatchesCurrentClass(decoded)
+                        local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded)
+                        local canOfferApply = classMatch and specHeroMatch
 
-                    if not canOfferApply then
-                        if WoWKeyb.optionsPanel then
-                            WoWKeyb.optionsPanel.forceVisibleProfileName = importedName
+                        if not canOfferApply then
+                            if WoWKeyb.optionsPanel then
+                                WoWKeyb.optionsPanel.forceVisibleProfileName = targetName
+                            end
+                            local mismatchReason = "class/spec/hero mismatch"
+                            if not classMatch then
+                                mismatchReason = "class mismatch"
+                            elseif not specHeroMatch then
+                                mismatchReason = "spec/hero mismatch"
+                            end
+                            print("|cffffcc00[WoWKeyb]|r Imported profile but did not apply (" .. mismatchReason .. ").")
+                            print("|cffffcc00[WoWKeyb]|r Imported profile kept visible in selector for debugging. Run /wowkeyb debugmatch \"" .. tostring(targetName) .. "\"")
+                        else
+                            if WoWKeyb.optionsPanel then
+                                WoWKeyb.optionsPanel.forceVisibleProfileName = nil
+                            end
+                            if not StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] then
+                                StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] = {
+                                    text = "Apply imported profile \"%s\" now?",
+                                    button1 = "Apply",
+                                    button2 = "Not now",
+                                    OnAccept = function(_, data)
+                                        local okApply, resultApply = applySelectionByName(data)
+                                        if okApply then
+                                            print("|cff00ff00[WoWKeyb]|r " .. tostring(resultApply))
+                                        else
+                                            print("|cffff0000[WoWKeyb]|r Failed to apply imported profile: " .. tostring(resultApply or "Unknown error"))
+                                        end
+                                        if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
+                                            WoWKeyb.optionsPanel.refreshCurrentProfileText()
+                                        end
+                                        if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
+                                            WoWKeyb.optionsPanel.refreshProfileSelector()
+                                        end
+                                        if viewerFrame and viewerFrame:IsShown() then
+                                            viewerFrame.profileName = data
+                                            refreshViewerFrame(viewerFrame)
+                                        end
+                                    end,
+                                    timeout = 0,
+                                    whileDead = true,
+                                    hideOnEscape = true,
+                                    preferredIndex = 3,
+                                }
+                            end
+                            StaticPopup_Show("WOWKEYB_IMPORT_APPLY_CONFIRM", targetName, nil, targetName)
                         end
-                        local mismatchReason = "class/spec/hero mismatch"
-                        if not classMatch then
-                            mismatchReason = "class mismatch"
-                        elseif not specHeroMatch then
-                            mismatchReason = "spec/hero mismatch"
+
+                        if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
+                            WoWKeyb.optionsPanel.refreshCurrentProfileText()
                         end
-                        print("|cffffcc00[WoWKeyb]|r Imported profile but did not apply (" .. mismatchReason .. ").")
-                        print("|cffffcc00[WoWKeyb]|r Imported profile kept visible in selector for debugging. Run /wowkeyb debugmatch \"" .. tostring(importedName) .. "\"")
-                    else
-                        if WoWKeyb.optionsPanel then
-                            WoWKeyb.optionsPanel.forceVisibleProfileName = nil
+                        if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
+                            WoWKeyb.optionsPanel.refreshProfileSelector()
                         end
-                        if not StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] then
-                            StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] = {
-                                text = "Apply imported profile \"%s\" now?",
-                                button1 = "Apply",
-                                button2 = "Not now",
+                        importFrame:Hide()
+                    end
+
+                    if WoWKeybDB.profiles[importedName] then
+                        if not StaticPopupDialogs["WOWKEYB_IMPORT_CONFLICT"] then
+                            StaticPopupDialogs["WOWKEYB_IMPORT_CONFLICT"] = {
+                                text = "Profile \"%s\" already exists.\nUpdate existing or save a copy?",
+                                button1 = "Update Existing",
+                                button2 = "Save as Copy",
                                 OnAccept = function(_, data)
-                                    local okApply, resultApply = applySelectionByName(data)
-                                    if okApply then
-                                        print("|cff00ff00[WoWKeyb]|r " .. tostring(resultApply))
-                                    else
-                                        print("|cffff0000[WoWKeyb]|r Failed to apply imported profile: " .. tostring(resultApply or "Unknown error"))
+                                    if data and data.onUpdate then
+                                        data.onUpdate()
                                     end
-                                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
-                                        WoWKeyb.optionsPanel.refreshCurrentProfileText()
-                                    end
-                                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
-                                        WoWKeyb.optionsPanel.refreshProfileSelector()
-                                    end
-                                    if viewerFrame and viewerFrame:IsShown() then
-                                        viewerFrame.profileName = data
-                                        refreshViewerFrame(viewerFrame)
+                                end,
+                                OnCancel = function(_, data, reason)
+                                    if reason == "clicked" and data and data.onCopy then
+                                        data.onCopy()
                                     end
                                 end,
                                 timeout = 0,
@@ -3128,16 +3162,33 @@ function WoWKeyb:ShowImportDialog(profileName)
                                 preferredIndex = 3,
                             }
                         end
-                        StaticPopup_Show("WOWKEYB_IMPORT_APPLY_CONFIRM", importedName, nil, importedName)
-                    end
 
-                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
-                        WoWKeyb.optionsPanel.refreshCurrentProfileText()
+                        local function buildCopyName(baseName)
+                            local candidate = tostring(baseName) .. " (Copy)"
+                            if not WoWKeybDB.profiles[candidate] then
+                                return candidate
+                            end
+                            local index = 2
+                            while true do
+                                candidate = string.format("%s (Copy %d)", tostring(baseName), index)
+                                if not WoWKeybDB.profiles[candidate] then
+                                    return candidate
+                                end
+                                index = index + 1
+                            end
+                        end
+
+                        StaticPopup_Show("WOWKEYB_IMPORT_CONFLICT", importedName, nil, {
+                            onUpdate = function()
+                                completeImport(importedName)
+                            end,
+                            onCopy = function()
+                                completeImport(buildCopyName(importedName))
+                            end,
+                        })
+                    else
+                        completeImport(importedName)
                     end
-                    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
-                        WoWKeyb.optionsPanel.refreshProfileSelector()
-                    end
-                    importFrame:Hide()
                 else
                     print("|cffff0000[WoWKeyb]|r Invalid profile code. Please paste a WoWKeyb export code.")
                 end
