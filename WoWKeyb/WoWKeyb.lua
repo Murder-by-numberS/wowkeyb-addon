@@ -1378,7 +1378,7 @@ applyProfile = function(profile)
             table.sort(slots)
         end
         for _, keybind in ipairs(profile.keybinds) do
-            if keybind and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
+            if keybind and keybind.spell and (keybind.spell.spellId or keybind.spell.spell_id or keybind.spell.id or keybind.spell.name) then
                 local nk = normalizeKey(keybind.key or "")
                 local keybindHasExplicitSlot = (keybind.barId or keybind.bar_id) and ((keybind.slotIndex or keybind.slot_index) ~= nil)
                 local slot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById)
@@ -1492,7 +1492,14 @@ applyProfile = function(profile)
         if not slot then
             skipped = skipped + 1
         else
-            local spellId = tonumber(spell.spellId or spell.spell_id)
+            local spellId = tonumber(spell.spellId or spell.spell_id or spell.id)
+            if not spellId then
+                local rawSpellId = tostring(spell.spellId or spell.spell_id or spell.id or "")
+                local numericOnly = rawSpellId:gsub("[^0-9]", "")
+                if numericOnly ~= "" then
+                    spellId = tonumber(numericOnly)
+                end
+            end
             local spellName = spell.name
 
             if spellId then
