@@ -1216,6 +1216,25 @@ local function applyBlizzardDefaultProfile()
     ensureDBDefaults()
     clearCustomLayoutFrames()
     applyBarModeVisibility(false)
+
+    -- Remove all keybindings for Blizzard action bar commands when returning
+    -- to Blizzard Default profile, so no WoWKeyb-applied binds remain.
+    for slot = 1, 60 do
+        local command = SLOT_COMMANDS[slot]
+        if command and type(GetBindingKey) == "function" then
+            local keys = { GetBindingKey(command) }
+            for _, existingKey in ipairs(keys) do
+                if existingKey and existingKey ~= "" then
+                    SetBinding(existingKey)
+                end
+            end
+        end
+    end
+    if type(GetCurrentBindingSet) == "function" and type(SaveBindings) == "function" then
+        local bindingSet = GetCurrentBindingSet()
+        SaveBindings(bindingSet)
+    end
+
     WoWKeybDB.lastApplied = {
         name = BLIZZARD_DEFAULT_PROFILE,
         applied = 0,
@@ -1454,6 +1473,13 @@ applyProfile = function(profile)
 
                 -- 1. Place spell on action bar (default WoW UI)
                 if not keepMacro then
+                    -- Clear target slot first so failed pickup does not leave stale/incorrect icons.
+                    if type(ClearAction) == "function" then
+                        pcall(function()
+                            ClearAction(actionSlot)
+                        end)
+                    end
+
                     local pickedUp = false
                     if spellId and type(PickupSpell) == "function" then
                         pcall(function()
