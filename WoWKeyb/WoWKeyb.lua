@@ -100,6 +100,30 @@ end
 
 local function profileMatchesCurrentSpecAndHero(profile)
     if not profile then return true end
+    local _, englishClass = UnitClass("player")
+    local normalizedClass = normalizeClassName(englishClass)
+
+    local function matchesAnyProfileVariant(profileValue, candidates)
+        if not profileValue then return true end
+        if type(candidates) ~= "table" or #candidates == 0 then
+            -- Fail open when runtime data is unavailable to avoid hiding valid profiles.
+            return true
+        end
+
+        local pv = normalizeClassName(profileValue)
+        if not pv then return true end
+        for _, candidate in ipairs(candidates) do
+            local cv = normalizeClassName(candidate)
+            if cv and cv ~= "" then
+                if pv == cv then return true end
+                -- Handle format drift like "holypaladin" vs "holy", or token variants.
+                if pv:find(cv, 1, true) or cv:find(pv, 1, true) then
+                    return true
+                end
+            end
+        end
+        return false
+    end
 
     local profileSpec = normalizeClassName(profile.spec)
     if profileSpec then
@@ -108,19 +132,16 @@ local function profileMatchesCurrentSpecAndHero(profile)
         if specIndex and GetSpecializationInfo then
             local specId, specName = GetSpecializationInfo(specIndex)
             currentSpecVariants = {
-                normalizeClassName(specName),
-                normalizeClassName(specId),
+                specName,
+                tostring(specId or ""),
             }
-        end
-
-        local specMatch = false
-        for _, variant in ipairs(currentSpecVariants) do
-            if variant and variant == profileSpec then
-                specMatch = true
-                break
+            if normalizedClass and specName then
+                currentSpecVariants[#currentSpecVariants + 1] = tostring(specName) .. tostring(englishClass or "")
+                currentSpecVariants[#currentSpecVariants + 1] = tostring(englishClass or "") .. tostring(specName)
             end
         end
-        if not specMatch then
+
+        if not matchesAnyProfileVariant(profileSpec, currentSpecVariants) then
             return false
         end
     end
@@ -142,19 +163,7 @@ local function profileMatchesCurrentSpecAndHero(profile)
             end
         end
 
-        -- If we can't confidently read current hero talent, avoid syncing to prevent corruption.
-        if #heroVariants == 0 then
-            return false
-        end
-
-        local heroMatch = false
-        for _, variant in ipairs(heroVariants) do
-            if variant and variant == profileHeroTalent then
-                heroMatch = true
-                break
-            end
-        end
-        if not heroMatch then
+        if not matchesAnyProfileVariant(profileHeroTalent, heroVariants) then
             return false
         end
     end
@@ -2201,7 +2210,7 @@ local function slashHandler(msg)
     elseif cmd == "import" or cmd == "i" then
         if arg == "" then
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb import <profile name>")
-            print("|cff00ff00[WoWKeyb]|r Then paste the share code (or legacy JSON profile) in the next edit box.")
+            print("|cff00ff00[WoWKeyb]|r Then paste the profile code in the next edit box.")
             return
         end
         -- Open a frame for paste - we'll use a simple editbox
@@ -2298,7 +2307,7 @@ local function slashHandler(msg)
         print("  /wowkeyb apply <name>  - Apply a stored profile")
         print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
         print("  /wowkeyb toggle       - Toggle between last two profiles")
-        print("  /wowkeyb import <name> - Import profile from share code (or legacy JSON)")
+        print("  /wowkeyb import <name> - Import profile from profile code")
         print("  /wowkeyb export [name] - Export selected profile as share code string")
         print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
         print("  /wowkeyb list         - List stored profiles")
@@ -2307,7 +2316,7 @@ local function slashHandler(msg)
     end
 end
 
--- Import dialog: simple scrollable edit box for pasting share code (or legacy JSON)
+-- Import dialog: simple scrollable edit box for pasting profile code.
 local importFrame
 function WoWKeyb:ShowImportDialog(profileName)
     if importFrame and importFrame:IsShown() then
@@ -2340,7 +2349,7 @@ function WoWKeyb:ShowImportDialog(profileName)
 
         local title = importFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         title:SetPoint("TOP", 0, -20)
-        title:SetText("WoWKeyb - Paste Share Code or JSON")
+        title:SetText("WoWKeyb - Paste Profile Code")
 
         local scroll = CreateFrame("ScrollFrame", "WoWKeybImportScroll", importFrame, "UIPanelScrollFrameTemplate")
         scroll:SetPoint("TOPLEFT", 20, -50)
@@ -2456,7 +2465,7 @@ function WoWKeyb:ShowImportDialog(profileName)
                     end
                     importFrame:Hide()
                 else
-                    print("|cffff0000[WoWKeyb]|r Invalid share code/JSON. Please paste a WoWKeyb export.")
+                    print("|cffff0000[WoWKeyb]|r Invalid profile code. Please paste a WoWKeyb export code.")
                 end
             end
         end)
