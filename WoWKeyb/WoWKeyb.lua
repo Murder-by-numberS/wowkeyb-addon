@@ -1375,6 +1375,7 @@ applyProfile = function(profile)
         for _, keybind in ipairs(profile.keybinds) do
             if keybind and keybind.spell and (keybind.spell.spellId or keybind.spell.name) then
                 local nk = normalizeKey(keybind.key or "")
+                local keybindHasExplicitSlot = (keybind.barId or keybind.bar_id) and ((keybind.slotIndex or keybind.slot_index) ~= nil)
                 local slot = resolvePreferredSlot(profile, keybind, nk, layoutBarIndexById)
                 if (not slot) and nk and nk ~= "" and layoutKeyToSlots[nk] then
                     for _, candidate in ipairs(layoutKeyToSlots[nk]) do
@@ -1384,12 +1385,41 @@ applyProfile = function(profile)
                         end
                     end
                 end
-                if slot and not slotToData[slot] then
-                    slotToData[slot] = {
-                        spell = keybind.spell,
-                        wowKey = nk,
-                        slot = slot,
-                    }
+                if slot then
+                    local existing = slotToData[slot]
+                    if not existing then
+                        slotToData[slot] = {
+                            spell = keybind.spell,
+                            wowKey = nk,
+                            slot = slot,
+                            hasExplicitSlot = keybindHasExplicitSlot and true or false,
+                        }
+                    else
+                        -- Resolve collisions deterministically:
+                        -- 1) Prefer entry whose key matches layout slot key.
+                        -- 2) Then prefer entry with explicit barId+slotIndex.
+                        local expectedKey = layoutSlotToKey[slot]
+                        local newMatchesLayoutKey = expectedKey and expectedKey ~= "" and nk == expectedKey
+                        local existingMatchesLayoutKey = expectedKey and expectedKey ~= ""
+                            and existing.wowKey
+                            and existing.wowKey == expectedKey
+
+                        local shouldReplace = false
+                        if newMatchesLayoutKey and not existingMatchesLayoutKey then
+                            shouldReplace = true
+                        elseif keybindHasExplicitSlot and not existing.hasExplicitSlot then
+                            shouldReplace = true
+                        end
+
+                        if shouldReplace then
+                            slotToData[slot] = {
+                                spell = keybind.spell,
+                                wowKey = nk,
+                                slot = slot,
+                                hasExplicitSlot = keybindHasExplicitSlot and true or false,
+                            }
+                        end
+                    end
                 end
             end
         end
