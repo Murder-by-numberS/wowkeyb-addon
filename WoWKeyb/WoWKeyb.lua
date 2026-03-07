@@ -2409,19 +2409,12 @@ local function createSettingsPanel()
     profileDropdown:SetPoint("TOPLEFT", profileLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(profileDropdown, 220)
 
-    local preferredSummaryText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    preferredSummaryText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
-    preferredSummaryText:SetWidth(420)
-    preferredSummaryText:SetJustifyH("LEFT")
-    preferredSummaryText:SetJustifyV("TOP")
-    preferredSummaryText:SetText("")
-
-    local mismatchSummaryText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    mismatchSummaryText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, -2)
-    mismatchSummaryText:SetWidth(420)
-    mismatchSummaryText:SetJustifyH("LEFT")
-    mismatchSummaryText:SetJustifyV("TOP")
-    mismatchSummaryText:SetText("")
+    local profileStatusText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    profileStatusText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
+    profileStatusText:SetWidth(460)
+    profileStatusText:SetJustifyH("LEFT")
+    profileStatusText:SetJustifyV("TOP")
+    profileStatusText:SetText("")
 
     local function refreshProfileSelector()
         local profiles = listStoredProfiles(false)
@@ -2518,21 +2511,22 @@ local function createSettingsPanel()
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
 
-        preferredSummaryText:SetText(string.format(
-            "Context: %s / %s / %s\nContext key: %s\nPreferred profile: %s\nMatching profiles: %s",
-            tostring(classLabel),
-            tostring(specLabel),
-            tostring(heroLabel),
-            tostring(contextKey),
-            tostring(preferredProfile or "none"),
-            (#matchingProfiles > 0 and table.concat(matchingProfiles, ", ") or "none")
-        ))
-
+        local statusLines = {
+            string.format("Context: %s / %s / %s", tostring(classLabel), tostring(specLabel), tostring(heroLabel)),
+            string.format("Context key: %s", tostring(contextKey)),
+            string.format("Preferred profile: %s", tostring(preferredProfile or "none")),
+            string.format("Matching profiles: %s", (#matchingProfiles > 0 and table.concat(matchingProfiles, ", ") or "none")),
+            "",
+        }
         if #mismatchLines == 0 then
-            mismatchSummaryText:SetText("Non-matching profiles: none")
+            statusLines[#statusLines + 1] = "Non-matching profiles: none"
         else
-            mismatchSummaryText:SetText("Non-matching profiles:\n" .. table.concat(mismatchLines, "\n"))
+            statusLines[#statusLines + 1] = "Non-matching profiles:"
+            for _, line in ipairs(mismatchLines) do
+                statusLines[#statusLines + 1] = line
+            end
         end
+        profileStatusText:SetText(table.concat(statusLines, "\n"))
     end
     panel.refreshProfileSelector = refreshProfileSelector
     refreshProfileSelector()
