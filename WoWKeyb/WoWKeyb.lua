@@ -94,6 +94,105 @@ local function normalizeClassName(value)
     return normalized
 end
 
+local function addUniqueLabel(list, seen, value)
+    if value == nil then return end
+    local str = tostring(value)
+    if str == "" then return end
+    if seen[str] then return end
+    seen[str] = true
+    list[#list + 1] = str
+end
+
+local function buildPlayerLabelCollection()
+    local labels = {
+        class = { variants = {}, _seen = {} },
+        spec = { variants = {}, names = {}, ids = {}, _seenVariants = {}, _seenNames = {}, _seenIds = {} },
+        hero = { variants = {}, names = {}, ids = {}, _seenVariants = {}, _seenNames = {}, _seenIds = {} },
+    }
+
+    local localizedClass, englishClass, classToken = UnitClass("player")
+    addUniqueLabel(labels.class.variants, labels.class._seen, localizedClass)
+    addUniqueLabel(labels.class.variants, labels.class._seen, englishClass)
+    addUniqueLabel(labels.class.variants, labels.class._seen, classToken)
+
+    local currentSpecId = nil
+    local currentSpecName = nil
+    local specIndex = GetSpecialization and GetSpecialization() or nil
+    if specIndex and GetSpecializationInfo then
+        local specId, specName = GetSpecializationInfo(specIndex)
+        currentSpecId = specId
+        currentSpecName = specName
+        addUniqueLabel(labels.spec.ids, labels.spec._seenIds, specId)
+        addUniqueLabel(labels.spec.names, labels.spec._seenNames, specName)
+        addUniqueLabel(labels.spec.variants, labels.spec._seenVariants, specName)
+        addUniqueLabel(labels.spec.variants, labels.spec._seenVariants, specId)
+
+        -- Backward-compatible variants used by older profile encodings.
+        addUniqueLabel(labels.spec.variants, labels.spec._seenVariants, tostring(specName or "") .. tostring(englishClass or ""))
+        addUniqueLabel(labels.spec.variants, labels.spec._seenVariants, tostring(englishClass or "") .. tostring(specName or ""))
+    end
+
+    local configId = nil
+    if C_ClassTalents and type(C_ClassTalents.GetActiveConfigID) == "function" then
+        local okConfig, activeConfigId = pcall(C_ClassTalents.GetActiveConfigID)
+        if okConfig then
+            configId = activeConfigId
+        end
+    end
+
+    local function addHeroDetails(heroSubTreeId)
+        if not heroSubTreeId then return end
+        addUniqueLabel(labels.hero.ids, labels.hero._seenIds, heroSubTreeId)
+        addUniqueLabel(labels.hero.variants, labels.hero._seenVariants, heroSubTreeId)
+
+        if configId and C_Traits and type(C_Traits.GetSubTreeInfo) == "function" then
+            local okSubTree, subTreeInfo = pcall(C_Traits.GetSubTreeInfo, configId, heroSubTreeId)
+            if okSubTree and type(subTreeInfo) == "table" then
+                addUniqueLabel(labels.hero.names, labels.hero._seenNames, subTreeInfo.name)
+                addUniqueLabel(labels.hero.names, labels.hero._seenNames, subTreeInfo.description)
+                addUniqueLabel(labels.hero.variants, labels.hero._seenVariants, subTreeInfo.name)
+                addUniqueLabel(labels.hero.variants, labels.hero._seenVariants, subTreeInfo.description)
+            end
+        end
+
+        if C_ClassTalents and type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
+            local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, heroSubTreeId)
+            if okInfo and type(heroInfo) == "table" then
+                addUniqueLabel(labels.hero.names, labels.hero._seenNames, heroInfo.name)
+                addUniqueLabel(labels.hero.names, labels.hero._seenNames, heroInfo.heroTalentName)
+                addUniqueLabel(labels.hero.variants, labels.hero._seenVariants, heroInfo.name)
+                addUniqueLabel(labels.hero.variants, labels.hero._seenVariants, heroInfo.heroTalentName)
+            end
+        end
+    end
+
+    if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+        local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+        if okHero and activeHeroId then
+            addHeroDetails(activeHeroId)
+        end
+    end
+
+    if C_ClassTalents and type(C_ClassTalents.GetHeroTalentSpecsForClassSpec) == "function" then
+        local okHeroOptions, heroSubTreeIds = pcall(C_ClassTalents.GetHeroTalentSpecsForClassSpec, configId, currentSpecId)
+        if okHeroOptions and type(heroSubTreeIds) == "table" then
+            for _, heroSubTreeId in ipairs(heroSubTreeIds) do
+                addHeroDetails(heroSubTreeId)
+            end
+        end
+    end
+
+    labels.class._seen = nil
+    labels.spec._seenVariants = nil
+    labels.spec._seenNames = nil
+    labels.spec._seenIds = nil
+    labels.hero._seenVariants = nil
+    labels.hero._seenNames = nil
+    labels.hero._seenIds = nil
+
+    return labels
+end
+
 local function profileMatchesCurrentClass(profile, debugLabel)
     if not profile then return true end
 
@@ -106,12 +205,11 @@ local function profileMatchesCurrentClass(profile, debugLabel)
         return true
     end
 
-    local localizedClass, englishClass, classToken = UnitClass("player")
-    local playerVariants = {
-        normalizeClassName(localizedClass),
-        normalizeClassName(englishClass),
-        normalizeClassName(classToken),
-    }
+    local labelCollection = buildPlayerLabelCollection()
+    local playerVariants = {}
+    for _, variant in ipairs(labelCollection.class.variants) do
+        playerVariants[#playerVariants + 1] = normalizeClassName(variant)
+    end
 
     for _, variant in ipairs(playerVariants) do
         if variant and variant == profileClass then
@@ -131,8 +229,6 @@ end
 
 local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
     if not profile then return true end
-    local _, englishClass = UnitClass("player")
-    local normalizedClass = normalizeClassName(englishClass)
     local debug = debugLabel ~= nil
     local debugLines = {}
     local function appendDebug(line)
@@ -140,6 +236,7 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
             debugLines[#debugLines + 1] = tostring(line)
         end
     end
+    local labelCollection = buildPlayerLabelCollection()
 
     local function matchesAnyProfileVariant(profileValue, candidates)
         if not profileValue then return true end
@@ -150,6 +247,21 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
 
         local pv = normalizeClassName(profileValue)
         if not pv then return true end
+        local profileHasLetters = pv:match("%a") ~= nil
+        local hasAnyTextCandidate = false
+        for _, candidate in ipairs(candidates) do
+            local cv = normalizeClassName(candidate)
+            if cv and cv ~= "" and cv:match("%a") then
+                hasAnyTextCandidate = true
+                break
+            end
+        end
+        -- Some client/build combinations only return hero numeric IDs (e.g. "50")
+        -- without a hero talent name. Avoid false-negative mismatches in that case.
+        if profileHasLetters and not hasAnyTextCandidate then
+            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profileValue))
+            return true
+        end
         for _, candidate in ipairs(candidates) do
             local cv = normalizeClassName(candidate)
             if cv and cv ~= "" then
@@ -165,20 +277,10 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
 
     local profileSpec = normalizeClassName(profile.spec)
     if profileSpec then
-        local currentSpecVariants = {}
-        local specIndex = GetSpecialization and GetSpecialization() or nil
-        if specIndex and GetSpecializationInfo then
-            local specId, specName = GetSpecializationInfo(specIndex)
-            currentSpecVariants = {
-                specName,
-                tostring(specId or ""),
-            }
-            if normalizedClass and specName then
-                currentSpecVariants[#currentSpecVariants + 1] = tostring(specName) .. tostring(englishClass or "")
-                currentSpecVariants[#currentSpecVariants + 1] = tostring(englishClass or "") .. tostring(specName)
-            end
-        end
+        local currentSpecVariants = labelCollection.spec.variants
         appendDebug("profile.spec=" .. tostring(profile.spec))
+        appendDebug("current spec ids=" .. table.concat(labelCollection.spec.ids, ", "))
+        appendDebug("current spec names=" .. table.concat(labelCollection.spec.names, ", "))
         appendDebug("current spec variants=" .. table.concat(currentSpecVariants, ", "))
 
         if not matchesAnyProfileVariant(profileSpec, currentSpecVariants) then
@@ -193,26 +295,11 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
 
     local profileHeroTalent = normalizeClassName(profile.heroTalent)
     if profileHeroTalent then
-        local heroVariants = {}
-        if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
-            local okHero, heroSpecId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
-            if okHero and heroSpecId then
-                heroVariants[#heroVariants + 1] = normalizeClassName(heroSpecId)
-                if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
-                    local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, heroSpecId)
-                    if okInfo and type(heroInfo) == "table" then
-                        heroVariants[#heroVariants + 1] = normalizeClassName(heroInfo.name)
-                        heroVariants[#heroVariants + 1] = normalizeClassName(heroInfo.heroTalentName)
-                    end
-                end
-            end
-        end
-        local heroPrintable = {}
-        for _, v in ipairs(heroVariants) do
-            heroPrintable[#heroPrintable + 1] = tostring(v)
-        end
+        local heroVariants = labelCollection.hero.variants
         appendDebug("profile.heroTalent=" .. tostring(profile.heroTalent))
-        appendDebug("current hero variants=" .. table.concat(heroPrintable, ", "))
+        appendDebug("current hero ids=" .. table.concat(labelCollection.hero.ids, ", "))
+        appendDebug("current hero names=" .. table.concat(labelCollection.hero.names, ", "))
+        appendDebug("current hero variants=" .. table.concat(heroVariants, ", "))
 
         if not matchesAnyProfileVariant(profileHeroTalent, heroVariants) then
             appendDebug("hero match result=false")
@@ -2267,6 +2354,7 @@ local function slashHandler(msg)
     local cmd, arg = msg:match("^(%S+)%s*(.*)$")
     cmd = (cmd or msg):lower()
     arg = arg and arg:trim() or ""
+    arg = arg:gsub('^"(.*)"$', "%1"):gsub("^'(.*)'$", "%1")
 
     if cmd == "apply" or cmd == "a" then
         if arg == "" then
@@ -2329,6 +2417,16 @@ local function slashHandler(msg)
         print("|cffffcc00[WoWKeyb]|r [match-debug] profile=" .. tostring(target)
             .. " class_ok=" .. tostring(classOk)
             .. " spec_hero_ok=" .. tostring(specHeroOk))
+
+    elseif cmd == "labels" or cmd == "ids" then
+        local labels = buildPlayerLabelCollection()
+        print("|cffffcc00[WoWKeyb]|r [labels] class variants: " .. table.concat(labels.class.variants, ", "))
+        print("|cffffcc00[WoWKeyb]|r [labels] spec ids: " .. table.concat(labels.spec.ids, ", "))
+        print("|cffffcc00[WoWKeyb]|r [labels] spec names: " .. table.concat(labels.spec.names, ", "))
+        print("|cffffcc00[WoWKeyb]|r [labels] spec variants: " .. table.concat(labels.spec.variants, ", "))
+        print("|cffffcc00[WoWKeyb]|r [labels] hero ids: " .. table.concat(labels.hero.ids, ", "))
+        print("|cffffcc00[WoWKeyb]|r [labels] hero names: " .. table.concat(labels.hero.names, ", "))
+        print("|cffffcc00[WoWKeyb]|r [labels] hero variants: " .. table.concat(labels.hero.variants, ", "))
 
     elseif cmd == "delete" or cmd == "d" then
         if arg == "" then
@@ -2418,6 +2516,7 @@ local function slashHandler(msg)
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb listall      - List all profiles (ignore class/spec filter)")
         print("  /wowkeyb debugmatch [name] - Print class/spec/hero match diagnostics")
+        print("  /wowkeyb labels       - Print class/spec/hero ID+label collection")
         print("  /wowkeyb delete <name> - Delete a stored profile")
         print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
     end
