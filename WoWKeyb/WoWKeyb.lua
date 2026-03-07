@@ -629,8 +629,9 @@ local function buildLayoutBarIndexById(profile)
     local byId = {}
     if profile and profile.layout and profile.layout.bars then
         for idx, bar in ipairs(profile.layout.bars) do
-            if bar and bar.id then
-                byId[bar.id] = idx - 1 -- zero-based bar index to match slot math
+            local barId = bar and (bar.id or bar.bar_id)
+            if barId then
+                byId[barId] = idx - 1 -- zero-based bar index to match slot math
             end
         end
     end
@@ -641,8 +642,9 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
 
     -- 1) Explicit barId + slotIndex from web app
-    if keybind and keybind.barId and (keybind.slotIndex or keybind.slot_index) ~= nil then
-        local barIdx = layoutBarIndexById[keybind.barId]
+    local keybindBarId = keybind and (keybind.barId or keybind.bar_id) or nil
+    if keybind and keybindBarId and (keybind.slotIndex or keybind.slot_index) ~= nil then
+        local barIdx = layoutBarIndexById[keybindBarId]
         local rawSlotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
         if barIdx ~= nil and rawSlotIdx then
             local candidates = {}
@@ -661,9 +663,12 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
             if #candidates > 0 then
                 -- If we have layout + key, prefer the candidate whose layout slotKey matches key.
                 local bar = hasLayout and profile.layout and profile.layout.bars and profile.layout.bars[barIdx + 1] or nil
-                if bar and type(bar.slotKeys) == "table" and wowKey and wowKey ~= "" then
+                local barSlotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
+                    or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
+                    or {}
+                if wowKey and wowKey ~= "" then
                     for _, candidate in ipairs(candidates) do
-                        local slotKey = normalizeKey(bar.slotKeys[candidate + 1] or "")
+                        local slotKey = normalizeKey(barSlotKeys[candidate + 1] or "")
                         if slotKey == wowKey then
                             return (barIdx * 12) + candidate + 1
                         end
@@ -1558,6 +1563,33 @@ local function buildViewerData(profile)
     local slotData = {}
     local keybinds = profile and profile.keybinds or {}
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    local function resolveViewerSpellIcon(spell)
+        if type(spell) ~= "table" then return nil end
+
+        local existingIcon = spell.icon
+        if existingIcon and tostring(existingIcon) ~= "" then
+            return existingIcon
+        end
+
+        local spellId = tonumber(spell.spellId or spell.spell_id)
+        if not spellId then
+            return nil
+        end
+
+        if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+            local okTexture, texture = pcall(C_Spell.GetSpellTexture, spellId)
+            if okTexture and texture and tostring(texture) ~= "" then
+                return texture
+            end
+        end
+        if _G.GetSpellInfo then
+            local _, _, texture = _G.GetSpellInfo(spellId)
+            if texture and tostring(texture) ~= "" then
+                return texture
+            end
+        end
+        return nil
+    end
 
     local function viewerBaseKey(key)
         local k = normalizeKey(key)
@@ -1584,7 +1616,7 @@ local function buildViewerData(profile)
         if kb and kb.spell and (kb.spell.spellId or kb.spell.spell_id or kb.spell.name) then
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or "")
-            local spellIcon = spell.icon
+            local spellIcon = resolveViewerSpellIcon(spell)
             local wowKey = normalizeKey(kb.key or "")
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
 
@@ -1601,7 +1633,9 @@ local function buildViewerData(profile)
     local bars = profile and profile.layout and profile.layout.bars or {}
     for barIdx = 1, 5 do
         local bar = bars[barIdx]
-        local slotKeys = (bar and type(bar.slotKeys) == "table") and bar.slotKeys or {}
+        local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
+            or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
+            or {}
         for slotIdx = 1, 12 do
             local globalSlot = ((barIdx - 1) * 12) + slotIdx
             local existing = slotData[globalSlot]
