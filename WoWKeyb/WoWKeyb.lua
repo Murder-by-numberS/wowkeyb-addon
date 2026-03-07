@@ -12,6 +12,26 @@ local SHARE_CODE_PREFIX = "WK1:"
 local ENABLE_LIVE_SLOT_SYNC = false
 WoWKeyb.isApplyingProfile = false
 
+local function getAddonVersion()
+    local version = nil
+    if C_AddOns and type(C_AddOns.GetAddOnMetadata) == "function" then
+        version = C_AddOns.GetAddOnMetadata(addonName, "Version")
+        if (not version or version == "") then
+            version = C_AddOns.GetAddOnMetadata("WoWKeyb", "Version")
+        end
+    end
+    if (not version or version == "") and type(GetAddOnMetadata) == "function" then
+        version = GetAddOnMetadata(addonName, "Version")
+        if (not version or version == "") then
+            version = GetAddOnMetadata("WoWKeyb", "Version")
+        end
+    end
+    if not version or version == "" then
+        return "unknown"
+    end
+    return tostring(version)
+end
+
 -- Default saved variables
 local function ensureDBDefaults()
     if type(WoWKeybDB) ~= "table" then
@@ -1936,8 +1956,12 @@ local function createSettingsPanel()
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     subtitle:SetText("Import and apply your WoWKeyb profiles.")
 
+    local versionText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    versionText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -4)
+    versionText:SetText("Version: " .. getAddonVersion())
+
     local currentProfileText = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    currentProfileText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -18)
+    currentProfileText:SetPoint("TOPLEFT", versionText, "BOTTOMLEFT", 0, -14)
     currentProfileText:SetText("Current profile: None")
 
     local function refreshCurrentProfileText()
