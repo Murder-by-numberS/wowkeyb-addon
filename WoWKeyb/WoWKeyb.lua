@@ -8,6 +8,8 @@ local addonName, WoWKeyb = ...
 WoWKeyb.addonName = addonName
 local BLIZZARD_DEFAULT_PROFILE = "Blizzard Default"
 local MINIMAP_LDB_NAME = "WoWKeyb"
+local SHARE_CODE_PREFIX = "WK1:"
+local ENABLE_LIVE_SLOT_SYNC = false
 WoWKeyb.isApplyingProfile = false
 
 -- Default saved variables
@@ -1233,6 +1235,91 @@ local function toJSONArray(items)
     return "[" .. table.concat(items, ",") .. "]"
 end
 
+local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+local function base64Encode(input)
+    if not input or input == "" then return "" end
+    local bytes = { string.byte(input, 1, #input) }
+    local output = {}
+
+    for i = 1, #bytes, 3 do
+        local b1 = bytes[i] or 0
+        local b2 = bytes[i + 1] or 0
+        local b3 = bytes[i + 2] or 0
+        local n = (b1 * 65536) + (b2 * 256) + b3
+
+        local c1 = math.floor(n / 262144) % 64
+        local c2 = math.floor(n / 4096) % 64
+        local c3 = math.floor(n / 64) % 64
+        local c4 = n % 64
+
+        output[#output + 1] = BASE64_ALPHABET:sub(c1 + 1, c1 + 1)
+        output[#output + 1] = BASE64_ALPHABET:sub(c2 + 1, c2 + 1)
+        output[#output + 1] = (i + 1 <= #bytes) and BASE64_ALPHABET:sub(c3 + 1, c3 + 1) or "="
+        output[#output + 1] = (i + 2 <= #bytes) and BASE64_ALPHABET:sub(c4 + 1, c4 + 1) or "="
+    end
+
+    return table.concat(output)
+end
+
+local function base64Decode(input)
+    if not input or input == "" then return "" end
+    local clean = tostring(input):gsub("%s+", "")
+    if (#clean % 4) ~= 0 then
+        return nil
+    end
+
+    local indexByChar = {}
+    for i = 1, #BASE64_ALPHABET do
+        indexByChar[BASE64_ALPHABET:sub(i, i)] = i - 1
+    end
+
+    local output = {}
+    for i = 1, #clean, 4 do
+        local c1 = clean:sub(i, i)
+        local c2 = clean:sub(i + 1, i + 1)
+        local c3 = clean:sub(i + 2, i + 2)
+        local c4 = clean:sub(i + 3, i + 3)
+
+        local v1 = indexByChar[c1]
+        local v2 = indexByChar[c2]
+        local v3 = (c3 == "=") and nil or indexByChar[c3]
+        local v4 = (c4 == "=") and nil or indexByChar[c4]
+
+        if v1 == nil or v2 == nil or (c3 ~= "=" and v3 == nil) or (c4 ~= "=" and v4 == nil) then
+            return nil
+        end
+
+        local n = (v1 * 262144) + (v2 * 4096) + ((v3 or 0) * 64) + (v4 or 0)
+        local b1 = math.floor(n / 65536) % 256
+        local b2 = math.floor(n / 256) % 256
+        local b3 = n % 256
+
+        output[#output + 1] = string.char(b1)
+        if c3 ~= "=" then output[#output + 1] = string.char(b2) end
+        if c4 ~= "=" then output[#output + 1] = string.char(b3) end
+    end
+
+    return table.concat(output)
+end
+
+local function encodeProfileShareCode(json)
+    return SHARE_CODE_PREFIX .. base64Encode(json or "")
+end
+
+local function decodeProfileShareCode(text)
+    local raw = tostring(text or "")
+    local trimmed = raw:gsub("^%s+", ""):gsub("%s+$", "")
+    if trimmed:sub(1, #SHARE_CODE_PREFIX):upper() ~= SHARE_CODE_PREFIX then
+        return nil
+    end
+    local payload = trimmed:sub(#SHARE_CODE_PREFIX + 1)
+    if payload == "" then
+        return nil
+    end
+    return base64Decode(payload)
+end
+
 local function serializeSyncedProfile(profileName, profile)
     ensureDBDefaults()
     if not profile then
@@ -1733,9 +1820,10 @@ function WoWKeyb:ShowExportDialog(profileName)
 
     local json, err = serializeSyncedProfile(profileName, profile)
     if not json then
-        print("|cffff0000[WoWKeyb]|r Failed to build export JSON: " .. tostring(err or "unknown error"))
+        print("|cffff0000[WoWKeyb]|r Failed to build export share code payload: " .. tostring(err or "unknown error"))
         return
     end
+    local shareCode = encodeProfileShareCode(json)
 
     if exportFrame and exportFrame:IsShown() then
         exportFrame:Hide()
@@ -1763,11 +1851,11 @@ function WoWKeyb:ShowExportDialog(profileName)
 
         local title = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         title:SetPoint("TOP", 0, -20)
-        title:SetText("WoWKeyb - Export Synced Profile JSON")
+        title:SetText("WoWKeyb - Export Share Code")
 
         local subtitle = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOP", title, "BOTTOM", 0, -6)
-        subtitle:SetText("Includes moved custom bar positions. Copy and paste into web app import.")
+        subtitle:SetText("Copy this share code and import it in WoWKeyb.")
 
         local scroll = CreateFrame("ScrollFrame", "WoWKeybExportScroll", exportFrame, "UIPanelScrollFrameTemplate")
         scroll:SetPoint("TOPLEFT", 20, -62)
@@ -1808,7 +1896,7 @@ function WoWKeyb:ShowExportDialog(profileName)
     end
 
     exportFrame:Show()
-    WoWKeybExportEdit:SetText(json)
+    WoWKeybExportEdit:SetText(shareCode)
     WoWKeybExportEdit:SetFocus()
     WoWKeybExportEdit:HighlightText()
 end
@@ -1913,7 +2001,7 @@ local function createSettingsPanel()
     local importBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     importBtn:SetSize(180, 24)
     importBtn:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -10)
-    importBtn:SetText("Import Profile JSON")
+    importBtn:SetText("Import Profile")
     importBtn:SetScript("OnClick", function()
         WoWKeyb:ShowImportDialog("ImportedProfile")
     end)
@@ -2099,7 +2187,7 @@ local function slashHandler(msg)
             if #list > 0 then
                 print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
             else
-                print("|cff00ff00[WoWKeyb]|r No matching profiles for this character context. Use /wowkeyb import <profile name> to paste JSON first.")
+                print("|cff00ff00[WoWKeyb]|r No matching profiles for this character context. Use /wowkeyb import <profile name> to paste a share code first.")
             end
             return
         end
@@ -2113,7 +2201,7 @@ local function slashHandler(msg)
     elseif cmd == "import" or cmd == "i" then
         if arg == "" then
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb import <profile name>")
-            print("|cff00ff00[WoWKeyb]|r Then paste the JSON profile in the next edit box.")
+            print("|cff00ff00[WoWKeyb]|r Then paste the share code (or legacy JSON profile) in the next edit box.")
             return
         end
         -- Open a frame for paste - we'll use a simple editbox
@@ -2210,8 +2298,8 @@ local function slashHandler(msg)
         print("  /wowkeyb apply <name>  - Apply a stored profile")
         print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
         print("  /wowkeyb toggle       - Toggle between last two profiles")
-        print("  /wowkeyb import <name> - Import profile from JSON (paste in dialog)")
-        print("  /wowkeyb export [name] - Export selected profile JSON")
+        print("  /wowkeyb import <name> - Import profile from share code (or legacy JSON)")
+        print("  /wowkeyb export [name] - Export selected profile as share code string")
         print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb delete <name> - Delete a stored profile")
@@ -2219,7 +2307,7 @@ local function slashHandler(msg)
     end
 end
 
--- Import dialog: simple scrollable edit box for pasting JSON
+-- Import dialog: simple scrollable edit box for pasting share code (or legacy JSON)
 local importFrame
 function WoWKeyb:ShowImportDialog(profileName)
     if importFrame and importFrame:IsShown() then
@@ -2252,7 +2340,7 @@ function WoWKeyb:ShowImportDialog(profileName)
 
         local title = importFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         title:SetPoint("TOP", 0, -20)
-        title:SetText("WoWKeyb - Paste Profile JSON")
+        title:SetText("WoWKeyb - Paste Share Code or JSON")
 
         local scroll = CreateFrame("ScrollFrame", "WoWKeybImportScroll", importFrame, "UIPanelScrollFrameTemplate")
         scroll:SetPoint("TOPLEFT", 20, -50)
@@ -2297,8 +2385,11 @@ function WoWKeyb:ShowImportDialog(profileName)
             local text = edit:GetText()
             if text and text:trim() ~= "" then
                 local ok, decoded = pcall(function()
-                    -- WoW doesn't have JSON built-in; use a simple parser for our format
-                    return WoWKeyb:ParseWoWKeybJSON(text)
+                    local normalizedText = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                    local decodedShareJson = decodeProfileShareCode(normalizedText)
+                    local payload = decodedShareJson or normalizedText
+                    -- WoW doesn't have JSON built-in; use a simple parser for our format.
+                    return WoWKeyb:ParseWoWKeybJSON(payload)
                 end)
                 if ok and decoded then
                     local importedName = importFrame.profileName
@@ -2365,7 +2456,7 @@ function WoWKeyb:ShowImportDialog(profileName)
                     end
                     importFrame:Hide()
                 else
-                    print("|cffff0000[WoWKeyb]|r Invalid JSON. Please paste the exact export from WoWKeyb.")
+                    print("|cffff0000[WoWKeyb]|r Invalid share code/JSON. Please paste a WoWKeyb export.")
                 end
             end
         end)
@@ -2509,6 +2600,7 @@ do
             syncFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
             syncFrame:SetScript("OnEvent", function(_, _, slot)
                 if not slot then return end
+                if not ENABLE_LIVE_SLOT_SYNC then return end
                 if not WoWKeybDB or not WoWKeybDB.currentProfile then return end
                 if WoWKeybDB.currentProfile == BLIZZARD_DEFAULT_PROFILE then return end
                 if WoWKeyb.isApplyingProfile then return end
