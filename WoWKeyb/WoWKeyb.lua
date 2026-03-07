@@ -94,12 +94,15 @@ local function normalizeClassName(value)
     return normalized
 end
 
-local function profileMatchesCurrentClass(profile)
+local function profileMatchesCurrentClass(profile, debugLabel)
     if not profile then return true end
 
     local profileClass = normalizeClassName(profile.class)
     if not profileClass then
         -- Backward compatibility for older profiles that did not include class.
+        if debugLabel then
+            print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] profile.class is empty; class check skipped")
+        end
         return true
     end
 
@@ -112,16 +115,31 @@ local function profileMatchesCurrentClass(profile)
 
     for _, variant in ipairs(playerVariants) do
         if variant and variant == profileClass then
+            if debugLabel then
+                print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] profile.class=" .. tostring(profile.class)
+                    .. " player variants=" .. table.concat(playerVariants, ", ") .. " class match=true")
+            end
             return true
         end
+    end
+    if debugLabel then
+        print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] profile.class=" .. tostring(profile.class)
+            .. " player variants=" .. table.concat(playerVariants, ", ") .. " class match=false")
     end
     return false
 end
 
-local function profileMatchesCurrentSpecAndHero(profile)
+local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
     if not profile then return true end
     local _, englishClass = UnitClass("player")
     local normalizedClass = normalizeClassName(englishClass)
+    local debug = debugLabel ~= nil
+    local debugLines = {}
+    local function appendDebug(line)
+        if debug then
+            debugLines[#debugLines + 1] = tostring(line)
+        end
+    end
 
     local function matchesAnyProfileVariant(profileValue, candidates)
         if not profileValue then return true end
@@ -160,10 +178,17 @@ local function profileMatchesCurrentSpecAndHero(profile)
                 currentSpecVariants[#currentSpecVariants + 1] = tostring(englishClass or "") .. tostring(specName)
             end
         end
+        appendDebug("profile.spec=" .. tostring(profile.spec))
+        appendDebug("current spec variants=" .. table.concat(currentSpecVariants, ", "))
 
         if not matchesAnyProfileVariant(profileSpec, currentSpecVariants) then
+            appendDebug("spec match result=false")
+            if debug then
+                print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] " .. table.concat(debugLines, " | "))
+            end
             return false
         end
+        appendDebug("spec match result=true")
     end
 
     local profileHeroTalent = normalizeClassName(profile.heroTalent)
@@ -182,12 +207,26 @@ local function profileMatchesCurrentSpecAndHero(profile)
                 end
             end
         end
+        local heroPrintable = {}
+        for _, v in ipairs(heroVariants) do
+            heroPrintable[#heroPrintable + 1] = tostring(v)
+        end
+        appendDebug("profile.heroTalent=" .. tostring(profile.heroTalent))
+        appendDebug("current hero variants=" .. table.concat(heroPrintable, ", "))
 
         if not matchesAnyProfileVariant(profileHeroTalent, heroVariants) then
+            appendDebug("hero match result=false")
+            if debug then
+                print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] " .. table.concat(debugLines, " | "))
+            end
             return false
         end
+        appendDebug("hero match result=true")
     end
 
+    if debug then
+        print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] " .. table.concat(debugLines, " | "))
+    end
     return true
 end
 
@@ -943,11 +982,12 @@ applyProfile = function(profile)
             tostring(playerClass)
         )
     end
-    if not profileMatchesCurrentSpecAndHero(profile) then
+    if not profileMatchesCurrentSpecAndHero(profile, "apply") then
         return false, string.format(
-            "Profile spec/hero mismatch: profile is %s / %s",
+            "Profile spec/hero mismatch: profile is %s / %s (run /wowkeyb debugmatch \"%s\")",
             tostring(profile.spec or "unknown"),
-            tostring(profile.heroTalent or "unknown")
+            tostring(profile.heroTalent or "unknown"),
+            tostring(profile.name or "profile")
         )
     end
 
@@ -1984,6 +2024,21 @@ local function createSettingsPanel()
         for _, name in ipairs(profiles) do
             table.insert(selectorOptions, name)
         end
+        -- Keep the most recently imported profile visible in the selector
+        -- even if strict class/spec/hero filtering currently excludes it.
+        local forceVisibleProfile = panel.forceVisibleProfileName
+        if forceVisibleProfile and forceVisibleProfile ~= BLIZZARD_DEFAULT_PROFILE and WoWKeybDB.profiles[forceVisibleProfile] then
+            local alreadyListed = false
+            for _, optionName in ipairs(selectorOptions) do
+                if optionName == forceVisibleProfile then
+                    alreadyListed = true
+                    break
+                end
+            end
+            if not alreadyListed then
+                table.insert(selectorOptions, forceVisibleProfile)
+            end
+        end
 
         -- Keep dropdown aligned with real applied/current profile state,
         -- especially after imports that update WoWKeybDB.currentProfile.
@@ -2015,6 +2070,7 @@ local function createSettingsPanel()
                 info.func = function()
                     selectedProfileName = name
                     UIDropDownMenu_SetText(profileDropdown, name)
+                    panel.forceVisibleProfileName = nil
                     local ok, result = applySelectionByName(name)
                     if ok then
                         print("|cff00ff00[WoWKeyb]|r " .. result)
@@ -2249,6 +2305,31 @@ local function slashHandler(msg)
             print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
         end
 
+    elseif cmd == "listall" or cmd == "la" then
+        local list = listStoredProfiles(false)
+        if #list == 0 then
+            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
+        else
+            print("|cff00ff00[WoWKeyb]|r All stored profiles: " .. table.concat(list, ", "))
+        end
+
+    elseif cmd == "debugmatch" or cmd == "dm" then
+        local target = arg ~= "" and arg or WoWKeybDB.currentProfile
+        if not target or target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Select a non-default profile first or pass a name: /wowkeyb debugmatch <profile>")
+            return
+        end
+        local profile = getStoredProfile(target)
+        if not profile then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+            return
+        end
+        local classOk = profileMatchesCurrentClass(profile, "debugmatch")
+        local specHeroOk = profileMatchesCurrentSpecAndHero(profile, "debugmatch")
+        print("|cffffcc00[WoWKeyb]|r [match-debug] profile=" .. tostring(target)
+            .. " class_ok=" .. tostring(classOk)
+            .. " spec_hero_ok=" .. tostring(specHeroOk))
+
     elseif cmd == "delete" or cmd == "d" then
         if arg == "" then
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb delete <profile name>")
@@ -2335,6 +2416,8 @@ local function slashHandler(msg)
         print("  /wowkeyb export [name] - Export selected profile as share code string")
         print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
         print("  /wowkeyb list         - List stored profiles")
+        print("  /wowkeyb listall      - List all profiles (ignore class/spec filter)")
+        print("  /wowkeyb debugmatch [name] - Print class/spec/hero match diagnostics")
         print("  /wowkeyb delete <name> - Delete a stored profile")
         print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
     end
@@ -2436,11 +2519,14 @@ function WoWKeyb:ShowImportDialog(profileName)
 
                     print("|cff00ff00[WoWKeyb]|r Imported profile: " .. importedName)
 
-                    local classMatch = profileMatchesCurrentClass(decoded)
-                    local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded)
+                    local classMatch = profileMatchesCurrentClass(decoded, "import")
+                    local specHeroMatch = profileMatchesCurrentSpecAndHero(decoded, "import")
                     local canOfferApply = classMatch and specHeroMatch
 
                     if not canOfferApply then
+                        if WoWKeyb.optionsPanel then
+                            WoWKeyb.optionsPanel.forceVisibleProfileName = importedName
+                        end
                         local mismatchReason = "class/spec/hero mismatch"
                         if not classMatch then
                             mismatchReason = "class mismatch"
@@ -2448,7 +2534,11 @@ function WoWKeyb:ShowImportDialog(profileName)
                             mismatchReason = "spec/hero mismatch"
                         end
                         print("|cffffcc00[WoWKeyb]|r Imported profile but did not apply (" .. mismatchReason .. ").")
+                        print("|cffffcc00[WoWKeyb]|r Imported profile kept visible in selector for debugging. Run /wowkeyb debugmatch \"" .. tostring(importedName) .. "\"")
                     else
+                        if WoWKeyb.optionsPanel then
+                            WoWKeyb.optionsPanel.forceVisibleProfileName = nil
+                        end
                         if not StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] then
                             StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] = {
                                 text = "Apply imported profile \"%s\" now?",
