@@ -227,6 +227,122 @@ local function profileMatchesCurrentClass(profile, debugLabel)
     return false
 end
 
+local function profileValueMatchesCandidates(profileValue, candidates)
+    if not profileValue then
+        return true, false
+    end
+    if type(candidates) ~= "table" or #candidates == 0 then
+        -- Fail open when runtime data is unavailable to avoid hiding valid profiles.
+        return true, false
+    end
+
+    local pv = normalizeClassName(profileValue)
+    if not pv then
+        return true, false
+    end
+
+    local profileHasLetters = pv:match("%a") ~= nil
+    local hasAnyTextCandidate = false
+    for _, candidate in ipairs(candidates) do
+        local cv = normalizeClassName(candidate)
+        if cv and cv ~= "" and cv:match("%a") then
+            hasAnyTextCandidate = true
+            break
+        end
+    end
+
+    -- Some client/build combinations only return hero numeric IDs (e.g. "50")
+    -- without a hero talent name. Avoid false-negative mismatches in that case.
+    if profileHasLetters and not hasAnyTextCandidate then
+        return true, true
+    end
+
+    for _, candidate in ipairs(candidates) do
+        local cv = normalizeClassName(candidate)
+        if cv and cv ~= "" then
+            if pv == cv then
+                return true, false
+            end
+            -- Handle format drift like "holypaladin" vs "holy", or token variants.
+            if pv:find(cv, 1, true) or cv:find(pv, 1, true) then
+                return true, false
+            end
+        end
+    end
+
+    return false, false
+end
+
+local function getProfileMatchDiagnostics(profile)
+    local labels = buildPlayerLabelCollection()
+    local diagnostics = {
+        classOk = true,
+        specOk = true,
+        heroOk = true,
+        matches = true,
+        reasons = {},
+        reasonSummary = "match",
+    }
+
+    local profileClass = normalizeClassName(profile and profile.class)
+    if profileClass then
+        diagnostics.classOk = false
+        for _, variant in ipairs(labels.class.variants) do
+            local candidate = normalizeClassName(variant)
+            if candidate and candidate == profileClass then
+                diagnostics.classOk = true
+                break
+            end
+        end
+        if not diagnostics.classOk then
+            diagnostics.reasons[#diagnostics.reasons + 1] = string.format(
+                "Class mismatch (profile: %s, player: %s)",
+                tostring(profile.class or "unknown"),
+                table.concat(labels.class.variants, ", ")
+            )
+        end
+    end
+
+    local profileSpec = profile and profile.spec or nil
+    local specOk, skippedSpecStrictText = profileValueMatchesCandidates(profileSpec, labels.spec.variants)
+    diagnostics.specOk = specOk
+    if not diagnostics.specOk then
+        diagnostics.reasons[#diagnostics.reasons + 1] = string.format(
+            "Spec mismatch (profile: %s, player variants: %s)",
+            tostring(profileSpec or "unknown"),
+            table.concat(labels.spec.variants, ", ")
+        )
+    elseif skippedSpecStrictText then
+        diagnostics.reasons[#diagnostics.reasons + 1] = "Spec match used numeric-only fallback"
+    end
+
+    local profileHero = profile and (profile.heroTalent or profile.hero_talent) or nil
+    local heroOk, skippedHeroStrictText = profileValueMatchesCandidates(profileHero, labels.hero.variants)
+    diagnostics.heroOk = heroOk
+    if not diagnostics.heroOk then
+        diagnostics.reasons[#diagnostics.reasons + 1] = string.format(
+            "Hero mismatch (profile: %s, player variants: %s)",
+            tostring(profileHero or "unknown"),
+            table.concat(labels.hero.variants, ", ")
+        )
+    elseif skippedHeroStrictText then
+        diagnostics.reasons[#diagnostics.reasons + 1] = "Hero match used numeric-only fallback"
+    end
+
+    diagnostics.matches = diagnostics.classOk and diagnostics.specOk and diagnostics.heroOk
+    if diagnostics.matches then
+        diagnostics.reasonSummary = "match"
+    else
+        local parts = {}
+        if not diagnostics.classOk then parts[#parts + 1] = "class" end
+        if not diagnostics.specOk then parts[#parts + 1] = "spec" end
+        if not diagnostics.heroOk then parts[#parts + 1] = "hero" end
+        diagnostics.reasonSummary = table.concat(parts, "/")
+    end
+
+    return diagnostics
+end
+
 local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
     if not profile then return true end
     local debug = debugLabel ~= nil
@@ -238,43 +354,6 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
     end
     local labelCollection = buildPlayerLabelCollection()
 
-    local function matchesAnyProfileVariant(profileValue, candidates)
-        if not profileValue then return true end
-        if type(candidates) ~= "table" or #candidates == 0 then
-            -- Fail open when runtime data is unavailable to avoid hiding valid profiles.
-            return true
-        end
-
-        local pv = normalizeClassName(profileValue)
-        if not pv then return true end
-        local profileHasLetters = pv:match("%a") ~= nil
-        local hasAnyTextCandidate = false
-        for _, candidate in ipairs(candidates) do
-            local cv = normalizeClassName(candidate)
-            if cv and cv ~= "" and cv:match("%a") then
-                hasAnyTextCandidate = true
-                break
-            end
-        end
-        -- Some client/build combinations only return hero numeric IDs (e.g. "50")
-        -- without a hero talent name. Avoid false-negative mismatches in that case.
-        if profileHasLetters and not hasAnyTextCandidate then
-            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profileValue))
-            return true
-        end
-        for _, candidate in ipairs(candidates) do
-            local cv = normalizeClassName(candidate)
-            if cv and cv ~= "" then
-                if pv == cv then return true end
-                -- Handle format drift like "holypaladin" vs "holy", or token variants.
-                if pv:find(cv, 1, true) or cv:find(pv, 1, true) then
-                    return true
-                end
-            end
-        end
-        return false
-    end
-
     local profileSpec = normalizeClassName(profile.spec)
     if profileSpec then
         local currentSpecVariants = labelCollection.spec.variants
@@ -283,7 +362,11 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
         appendDebug("current spec names=" .. table.concat(labelCollection.spec.names, ", "))
         appendDebug("current spec variants=" .. table.concat(currentSpecVariants, ", "))
 
-        if not matchesAnyProfileVariant(profileSpec, currentSpecVariants) then
+        local specMatch, specFallbackUsed = profileValueMatchesCandidates(profileSpec, currentSpecVariants)
+        if specFallbackUsed then
+            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profile.spec))
+        end
+        if not specMatch then
             appendDebug("spec match result=false")
             if debug then
                 print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] " .. table.concat(debugLines, " | "))
@@ -301,7 +384,11 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
         appendDebug("current hero names=" .. table.concat(labelCollection.hero.names, ", "))
         appendDebug("current hero variants=" .. table.concat(heroVariants, ", "))
 
-        if not matchesAnyProfileVariant(profileHeroTalent, heroVariants) then
+        local heroMatch, heroFallbackUsed = profileValueMatchesCandidates(profileHeroTalent, heroVariants)
+        if heroFallbackUsed then
+            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profile.heroTalent))
+        end
+        if not heroMatch then
             appendDebug("hero match result=false")
             if debug then
                 print("|cffffcc00[WoWKeyb]|r [match-debug:" .. tostring(debugLabel) .. "] " .. table.concat(debugLines, " | "))
@@ -2160,8 +2247,15 @@ local function createSettingsPanel()
     profileDropdown:SetPoint("TOPLEFT", profileLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(profileDropdown, 220)
 
+    local mismatchSummaryText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    mismatchSummaryText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, -2)
+    mismatchSummaryText:SetWidth(420)
+    mismatchSummaryText:SetJustifyH("LEFT")
+    mismatchSummaryText:SetJustifyV("TOP")
+    mismatchSummaryText:SetText("")
+
     local function refreshProfileSelector()
-        local profiles = listStoredProfiles(true)
+        local profiles = listStoredProfiles(false)
         local selectorOptions = { BLIZZARD_DEFAULT_PROFILE }
         for _, name in ipairs(profiles) do
             table.insert(selectorOptions, name)
@@ -2204,10 +2298,24 @@ local function createSettingsPanel()
             end
         end
 
+        local mismatchLines = {}
         UIDropDownMenu_Initialize(profileDropdown, function(self, level)
             for _, name in ipairs(selectorOptions) do
                 local info = UIDropDownMenu_CreateInfo()
-                info.text = name
+                local displayName = name
+                if name ~= BLIZZARD_DEFAULT_PROFILE then
+                    local profile = WoWKeybDB.profiles[name]
+                    local diagnostics = getProfileMatchDiagnostics(profile)
+                    if diagnostics and not diagnostics.matches then
+                        displayName = string.format("%s [NO MATCH: %s]", name, diagnostics.reasonSummary)
+                        mismatchLines[#mismatchLines + 1] = string.format(
+                            " - %s: %s",
+                            name,
+                            table.concat(diagnostics.reasons, " | ")
+                        )
+                    end
+                end
+                info.text = displayName
                 info.checked = (name == selectedProfileName)
                 info.func = function()
                     selectedProfileName = name
@@ -2225,6 +2333,12 @@ local function createSettingsPanel()
             end
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
+
+        if #mismatchLines == 0 then
+            mismatchSummaryText:SetText("Non-matching profiles: none")
+        else
+            mismatchSummaryText:SetText("Non-matching profiles:\n" .. table.concat(mismatchLines, "\n"))
+        end
     end
     panel.refreshProfileSelector = refreshProfileSelector
     refreshProfileSelector()
@@ -2456,6 +2570,21 @@ local function slashHandler(msg)
             print("|cff00ff00[WoWKeyb]|r All stored profiles: " .. table.concat(list, ", "))
         end
 
+    elseif cmd == "mismatches" or cmd == "mm" then
+        local list = listStoredProfiles(false)
+        local hasMismatch = false
+        for _, name in ipairs(list) do
+            local profile = getStoredProfile(name)
+            local diagnostics = getProfileMatchDiagnostics(profile)
+            if diagnostics and not diagnostics.matches then
+                hasMismatch = true
+                print("|cffffcc00[WoWKeyb]|r [mismatch] " .. tostring(name) .. " -> " .. table.concat(diagnostics.reasons, " | "))
+            end
+        end
+        if not hasMismatch then
+            print("|cff00ff00[WoWKeyb]|r No profile mismatches for current class/spec/hero.")
+        end
+
     elseif cmd == "debugmatch" or cmd == "dm" then
         local target = arg ~= "" and arg or WoWKeybDB.currentProfile
         if not target or target == BLIZZARD_DEFAULT_PROFILE then
@@ -2570,6 +2699,7 @@ local function slashHandler(msg)
         print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb listall      - List all profiles (ignore class/spec filter)")
+        print("  /wowkeyb mismatches   - List non-matching profiles and reasons")
         print("  /wowkeyb debugmatch [name] - Print class/spec/hero match diagnostics")
         print("  /wowkeyb labels       - Print class/spec/hero ID+label collection")
         print("  /wowkeyb delete <name> - Delete a stored profile")
