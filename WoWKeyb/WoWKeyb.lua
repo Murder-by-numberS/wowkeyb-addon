@@ -50,11 +50,56 @@ local function ensureDBDefaults()
     if type(WoWKeybDB.minimap) ~= "table" then
         WoWKeybDB.minimap = {}
     end
+    if type(WoWKeybDB.preferredProfileByContext) ~= "table" then
+        WoWKeybDB.preferredProfileByContext = {}
+    end
     if WoWKeybDB.minimap.hide == nil then WoWKeybDB.minimap.hide = false end
     if WoWKeybDB.minimap.minimapPos == nil then
         WoWKeybDB.minimap.minimapPos = tonumber(WoWKeybDB.minimap.angle) or 225
     end
     WoWKeybDB.minimap.angle = nil
+end
+
+local function buildCurrentPlayerContextKey()
+    local function normalizeContextValue(value)
+        if not value then return nil end
+        local normalized = tostring(value):lower():gsub("[%s%-%_]", "")
+        if normalized == "" then return nil end
+        return normalized
+    end
+
+    local _, englishClass, classToken = UnitClass("player")
+    local classValue = normalizeContextValue(englishClass or classToken) or "unknown"
+
+    local specPart = "none"
+    local specIndex = GetSpecialization and GetSpecialization() or nil
+    if specIndex and GetSpecializationInfo then
+        local specId, specName = GetSpecializationInfo(specIndex)
+        specPart = tostring(specId or normalizeContextValue(specName) or "none")
+    end
+
+    local heroPart = "none"
+    if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+        local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+        if okHero and activeHeroId then
+            heroPart = tostring(activeHeroId)
+        end
+    end
+
+    return classValue .. "|" .. specPart .. "|" .. heroPart
+end
+
+local function setPreferredProfileForCurrentContext(profileName)
+    ensureDBDefaults()
+    if not profileName or profileName == "" or profileName == BLIZZARD_DEFAULT_PROFILE then
+        return
+    end
+    WoWKeybDB.preferredProfileByContext[buildCurrentPlayerContextKey()] = profileName
+end
+
+local function getPreferredProfileForCurrentContext()
+    ensureDBDefaults()
+    return WoWKeybDB.preferredProfileByContext[buildCurrentPlayerContextKey()]
 end
 
 ensureDBDefaults()
@@ -227,7 +272,7 @@ local function profileMatchesCurrentClass(profile, debugLabel)
     return false
 end
 
-local function profileValueMatchesCandidates(profileValue, candidates)
+local function profileValueMatchesCandidates(profileValue, candidates, classVariants)
     if not profileValue then
         return true, false
     end
@@ -236,10 +281,54 @@ local function profileValueMatchesCandidates(profileValue, candidates)
         return true, false
     end
 
+    local function startsWith(str, prefix)
+        if not str or not prefix then return false end
+        return str:sub(1, #prefix) == prefix
+    end
+
+    local normalizedClassTokens = {}
+    if type(classVariants) == "table" then
+        local seen = {}
+        for _, classVariant in ipairs(classVariants) do
+            local token = normalizeClassName(classVariant)
+            if token and token ~= "" and not seen[token] then
+                seen[token] = true
+                normalizedClassTokens[#normalizedClassTokens + 1] = token
+            end
+        end
+    end
+
+    local function stripClassTokens(value)
+        local normalized = normalizeClassName(value)
+        if not normalized or normalized == "" then
+            return nil
+        end
+        local changed = true
+        while changed do
+            changed = false
+            for _, token in ipairs(normalizedClassTokens) do
+                if token ~= "" and normalized ~= token then
+                    if startsWith(normalized, token) then
+                        normalized = normalized:sub(#token + 1)
+                        changed = true
+                    elseif normalized:sub(-#token) == token then
+                        normalized = normalized:sub(1, #normalized - #token)
+                        changed = true
+                    end
+                end
+            end
+        end
+        if normalized == "" then
+            return nil
+        end
+        return normalized
+    end
+
     local pv = normalizeClassName(profileValue)
     if not pv then
         return true, false
     end
+    local pvStripped = stripClassTokens(profileValue)
 
     local profileHasLetters = pv:match("%a") ~= nil
     local hasAnyTextCandidate = false
@@ -263,8 +352,13 @@ local function profileValueMatchesCandidates(profileValue, candidates)
             if pv == cv then
                 return true, false
             end
-            -- Handle format drift like "holypaladin" vs "holy", or token variants.
-            if pv:find(cv, 1, true) or cv:find(pv, 1, true) then
+            local cvStripped = stripClassTokens(candidate)
+            if pvStripped and cvStripped and pvStripped == cvStripped then
+                return true, false
+            end
+            -- Limited prefix fallback for abbreviations (e.g. ret/retribution).
+            if pvStripped and cvStripped and #pvStripped >= 3 and #cvStripped >= 3
+                and (startsWith(pvStripped, cvStripped) or startsWith(cvStripped, pvStripped)) then
                 return true, false
             end
         end
@@ -303,8 +397,8 @@ local function getProfileMatchDiagnostics(profile)
         end
     end
 
-    local profileSpec = profile and profile.spec or nil
-    local specOk, skippedSpecStrictText = profileValueMatchesCandidates(profileSpec, labels.spec.variants)
+    local profileSpec = profile and (profile.spec or profile.spec_id or profile.specId or profile.specialization) or nil
+    local specOk, skippedSpecStrictText = profileValueMatchesCandidates(profileSpec, labels.spec.variants, labels.class.variants)
     diagnostics.specOk = specOk
     if not diagnostics.specOk then
         diagnostics.reasons[#diagnostics.reasons + 1] = string.format(
@@ -316,8 +410,8 @@ local function getProfileMatchDiagnostics(profile)
         diagnostics.reasons[#diagnostics.reasons + 1] = "Spec match used numeric-only fallback"
     end
 
-    local profileHero = profile and (profile.heroTalent or profile.hero_talent) or nil
-    local heroOk, skippedHeroStrictText = profileValueMatchesCandidates(profileHero, labels.hero.variants)
+    local profileHero = profile and (profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId) or nil
+    local heroOk, skippedHeroStrictText = profileValueMatchesCandidates(profileHero, labels.hero.variants, labels.class.variants)
     diagnostics.heroOk = heroOk
     if not diagnostics.heroOk then
         diagnostics.reasons[#diagnostics.reasons + 1] = string.format(
@@ -343,6 +437,16 @@ local function getProfileMatchDiagnostics(profile)
     return diagnostics
 end
 
+local function getProfileContextSummary(profile)
+    if type(profile) ~= "table" then
+        return "Unknown / - / -"
+    end
+    local classValue = tostring(profile.class or "Unknown")
+    local specValue = tostring(profile.spec or profile.spec_id or profile.specId or profile.specialization or "-")
+    local heroValue = tostring(profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId or "-")
+    return string.format("%s / %s / %s", classValue, specValue, heroValue)
+end
+
 local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
     if not profile then return true end
     local debug = debugLabel ~= nil
@@ -354,17 +458,18 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
     end
     local labelCollection = buildPlayerLabelCollection()
 
-    local profileSpec = normalizeClassName(profile.spec)
+    local profileSpecRaw = profile.spec or profile.spec_id or profile.specId or profile.specialization
+    local profileSpec = normalizeClassName(profileSpecRaw)
     if profileSpec then
         local currentSpecVariants = labelCollection.spec.variants
-        appendDebug("profile.spec=" .. tostring(profile.spec))
+        appendDebug("profile.spec=" .. tostring(profileSpecRaw))
         appendDebug("current spec ids=" .. table.concat(labelCollection.spec.ids, ", "))
         appendDebug("current spec names=" .. table.concat(labelCollection.spec.names, ", "))
         appendDebug("current spec variants=" .. table.concat(currentSpecVariants, ", "))
 
-        local specMatch, specFallbackUsed = profileValueMatchesCandidates(profileSpec, currentSpecVariants)
+        local specMatch, specFallbackUsed = profileValueMatchesCandidates(profileSpecRaw, currentSpecVariants, labelCollection.class.variants)
         if specFallbackUsed then
-            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profile.spec))
+            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profileSpecRaw))
         end
         if not specMatch then
             appendDebug("spec match result=false")
@@ -376,17 +481,18 @@ local function profileMatchesCurrentSpecAndHero(profile, debugLabel)
         appendDebug("spec match result=true")
     end
 
-    local profileHeroTalent = normalizeClassName(profile.heroTalent)
+    local profileHeroRaw = profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId
+    local profileHeroTalent = normalizeClassName(profileHeroRaw)
     if profileHeroTalent then
         local heroVariants = labelCollection.hero.variants
-        appendDebug("profile.heroTalent=" .. tostring(profile.heroTalent))
+        appendDebug("profile.heroTalent=" .. tostring(profileHeroRaw))
         appendDebug("current hero ids=" .. table.concat(labelCollection.hero.ids, ", "))
         appendDebug("current hero names=" .. table.concat(labelCollection.hero.names, ", "))
         appendDebug("current hero variants=" .. table.concat(heroVariants, ", "))
 
-        local heroMatch, heroFallbackUsed = profileValueMatchesCandidates(profileHeroTalent, heroVariants)
+        local heroMatch, heroFallbackUsed = profileValueMatchesCandidates(profileHeroRaw, heroVariants, labelCollection.class.variants)
         if heroFallbackUsed then
-            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profile.heroTalent))
+            appendDebug("runtime candidates are numeric-only; skipping strict text match for value=" .. tostring(profileHeroRaw))
         end
         if not heroMatch then
             appendDebug("hero match result=false")
@@ -1142,6 +1248,7 @@ local function applySelectionByName(target)
             WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
             WoWKeybDB.currentProfile = target
         end
+        setPreferredProfileForCurrentContext(target)
     end
     return ok, result
 end
@@ -1467,6 +1574,61 @@ local function listStoredProfiles(onlyCurrentCharacterContext)
     end
     table.sort(list)
     return list
+end
+
+local function enforceCurrentProfileForPlayerContext(triggerEvent)
+    ensureDBDefaults()
+    local current = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
+
+    local matchingProfiles = listStoredProfiles(true)
+    local target = BLIZZARD_DEFAULT_PROFILE
+    local targetReason = "default"
+
+    if #matchingProfiles > 0 then
+        local preferred = getPreferredProfileForCurrentContext()
+        if preferred and WoWKeybDB.profiles[preferred] then
+            for _, candidate in ipairs(matchingProfiles) do
+                if candidate == preferred then
+                    target = preferred
+                    targetReason = "preferred"
+                    break
+                end
+            end
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            for _, candidate in ipairs(matchingProfiles) do
+                if candidate == current then
+                    target = current
+                    targetReason = "current"
+                    break
+                end
+            end
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            target = matchingProfiles[1]
+            targetReason = "first_match"
+        end
+    end
+
+    if target == current then
+        if target ~= BLIZZARD_DEFAULT_PROFILE then
+            setPreferredProfileForCurrentContext(target)
+        end
+        return
+    end
+
+    local ok, result = applySelectionByName(target)
+    if ok then
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffffcc00[WoWKeyb]|r No matching WoWKeyb profile for current class/spec/hero after "
+                .. tostring(triggerEvent or "context change")
+                .. "; switched to Blizzard Default.")
+        else
+            print("|cff00ff00[WoWKeyb]|r Auto-selected profile for current class/spec/hero (" .. tostring(targetReason) .. "): " .. tostring(target))
+        end
+    else
+        print("|cffff0000[WoWKeyb]|r Failed to apply context profile " .. tostring(target) .. ": " .. tostring(result or "unknown error"))
+    end
 end
 
 local function jsonEscape(str)
@@ -2247,6 +2409,13 @@ local function createSettingsPanel()
     profileDropdown:SetPoint("TOPLEFT", profileLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(profileDropdown, 220)
 
+    local preferredSummaryText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    preferredSummaryText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
+    preferredSummaryText:SetWidth(420)
+    preferredSummaryText:SetJustifyH("LEFT")
+    preferredSummaryText:SetJustifyV("TOP")
+    preferredSummaryText:SetText("")
+
     local mismatchSummaryText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     mismatchSummaryText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, -2)
     mismatchSummaryText:SetWidth(420)
@@ -2298,7 +2467,15 @@ local function createSettingsPanel()
             end
         end
 
+        local contextKey = buildCurrentPlayerContextKey()
+        local preferredProfile = getPreferredProfileForCurrentContext()
+        local labels = buildPlayerLabelCollection()
+        local classLabel = labels.class.variants[1] or "Unknown"
+        local specLabel = labels.spec.names[1] or labels.spec.ids[1] or "-"
+        local heroLabel = labels.hero.names[1] or labels.hero.ids[1] or "-"
+
         local mismatchLines = {}
+        local matchingProfiles = {}
         UIDropDownMenu_Initialize(profileDropdown, function(self, level)
             for _, name in ipairs(selectorOptions) do
                 local info = UIDropDownMenu_CreateInfo()
@@ -2306,13 +2483,20 @@ local function createSettingsPanel()
                 if name ~= BLIZZARD_DEFAULT_PROFILE then
                     local profile = WoWKeybDB.profiles[name]
                     local diagnostics = getProfileMatchDiagnostics(profile)
+                    local contextSummary = getProfileContextSummary(profile)
+                    displayName = string.format("%s [%s]", displayName, contextSummary)
+                    if preferredProfile and name == preferredProfile then
+                        displayName = displayName .. " - PREFERRED"
+                    end
                     if diagnostics and not diagnostics.matches then
-                        displayName = string.format("%s [NO MATCH: %s]", name, diagnostics.reasonSummary)
+                        displayName = string.format("%s - NO MATCH (%s)", displayName, diagnostics.reasonSummary)
                         mismatchLines[#mismatchLines + 1] = string.format(
                             " - %s: %s",
                             name,
                             table.concat(diagnostics.reasons, " | ")
                         )
+                    else
+                        matchingProfiles[#matchingProfiles + 1] = name
                     end
                 end
                 info.text = displayName
@@ -2333,6 +2517,16 @@ local function createSettingsPanel()
             end
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
+
+        preferredSummaryText:SetText(string.format(
+            "Context: %s / %s / %s\nContext key: %s\nPreferred profile: %s\nMatching profiles: %s",
+            tostring(classLabel),
+            tostring(specLabel),
+            tostring(heroLabel),
+            tostring(contextKey),
+            tostring(preferredProfile or "none"),
+            (#matchingProfiles > 0 and table.concat(matchingProfiles, ", ") or "none")
+        ))
 
         if #mismatchLines == 0 then
             mismatchSummaryText:SetText("Non-matching profiles: none")
@@ -2585,6 +2779,44 @@ local function slashHandler(msg)
             print("|cff00ff00[WoWKeyb]|r No profile mismatches for current class/spec/hero.")
         end
 
+    elseif cmd == "contexts" or cmd == "ctx" then
+        local list = listStoredProfiles(false)
+        if #list == 0 then
+            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
+        else
+            for _, name in ipairs(list) do
+                local profile = getStoredProfile(name)
+                local diagnostics = getProfileMatchDiagnostics(profile)
+                local marker = diagnostics and diagnostics.matches and "MATCH" or ("NO MATCH: " .. tostring(diagnostics and diagnostics.reasonSummary or "unknown"))
+                print("|cffffcc00[WoWKeyb]|r [context] " .. tostring(name) .. " -> " .. getProfileContextSummary(profile) .. " [" .. marker .. "]")
+            end
+        end
+
+    elseif cmd == "preferred" or cmd == "pref" then
+        local labels = buildPlayerLabelCollection()
+        local classLabel = labels.class.variants[1] or "Unknown"
+        local specLabel = labels.spec.names[1] or labels.spec.ids[1] or "-"
+        local heroLabel = labels.hero.names[1] or labels.hero.ids[1] or "-"
+        local contextKey = buildCurrentPlayerContextKey()
+        local preferredProfile = getPreferredProfileForCurrentContext()
+
+        print("|cffffcc00[WoWKeyb]|r [preferred] context: " .. tostring(classLabel) .. " / " .. tostring(specLabel) .. " / " .. tostring(heroLabel))
+        print("|cffffcc00[WoWKeyb]|r [preferred] key: " .. tostring(contextKey))
+        if preferredProfile and WoWKeybDB.profiles[preferredProfile] then
+            print("|cff00ff00[WoWKeyb]|r [preferred] profile: " .. tostring(preferredProfile))
+        else
+            print("|cffffcc00[WoWKeyb]|r [preferred] profile: none")
+        end
+
+        local hasAny = false
+        for key, profileName in pairs(WoWKeybDB.preferredProfileByContext or {}) do
+            hasAny = true
+            print("|cffffcc00[WoWKeyb]|r [preferred-map] " .. tostring(key) .. " -> " .. tostring(profileName))
+        end
+        if not hasAny then
+            print("|cffffcc00[WoWKeyb]|r [preferred-map] none")
+        end
+
     elseif cmd == "debugmatch" or cmd == "dm" then
         local target = arg ~= "" and arg or WoWKeybDB.currentProfile
         if not target or target == BLIZZARD_DEFAULT_PROFILE then
@@ -2700,6 +2932,8 @@ local function slashHandler(msg)
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb listall      - List all profiles (ignore class/spec filter)")
         print("  /wowkeyb mismatches   - List non-matching profiles and reasons")
+        print("  /wowkeyb contexts     - List profile class/spec/hero contexts")
+        print("  /wowkeyb preferred    - Show preferred profile mapping by context")
         print("  /wowkeyb debugmatch [name] - Print class/spec/hero match diagnostics")
         print("  /wowkeyb labels       - Print class/spec/hero ID+label collection")
         print("  /wowkeyb delete <name> - Delete a stored profile")
@@ -3012,6 +3246,47 @@ do
                 if WoWKeybDB.currentProfile == BLIZZARD_DEFAULT_PROFILE then return end
                 if WoWKeyb.isApplyingProfile then return end
                 syncProfileSpellsFromActionBars(WoWKeybDB.currentProfile)
+            end)
+
+            -- When class/spec/hero context changes, ensure current selection still makes sense.
+            local contextFrame = CreateFrame("Frame")
+            contextFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+            contextFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+            contextFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
+            if C_ClassTalents then
+                contextFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+            end
+
+            local pendingContextCheck = false
+            local function queueContextCheck(triggerEvent)
+                if pendingContextCheck then return end
+                pendingContextCheck = true
+
+                local function runCheck()
+                    pendingContextCheck = false
+                    enforceCurrentProfileForPlayerContext(triggerEvent)
+                    if WoWKeyb.optionsPanel then
+                        if WoWKeyb.optionsPanel.refreshProfileSelector then
+                            WoWKeyb.optionsPanel.refreshProfileSelector()
+                        end
+                        if WoWKeyb.optionsPanel.refreshCurrentProfileText then
+                            WoWKeyb.optionsPanel.refreshCurrentProfileText()
+                        end
+                    end
+                end
+
+                if C_Timer and type(C_Timer.After) == "function" then
+                    C_Timer.After(0.25, runCheck)
+                else
+                    runCheck()
+                end
+            end
+
+            contextFrame:SetScript("OnEvent", function(_, contextEvent, arg1)
+                if contextEvent == "PLAYER_SPECIALIZATION_CHANGED" and arg1 ~= "player" then
+                    return
+                end
+                queueContextCheck(contextEvent)
             end)
         end
     end)
