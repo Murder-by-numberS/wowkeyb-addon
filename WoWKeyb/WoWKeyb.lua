@@ -866,6 +866,11 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
                             return (barIdx * 12) + candidate + 1
                         end
                     end
+                    -- Explicit bar/slot metadata exists but does not match the key for this bar's layout.
+                    -- Do not force-fallback to the explicit candidate; continue to key-based resolution below.
+                    if hasLayout then
+                        return nil
+                    end
                 end
 
                 -- Fall back to first valid candidate.

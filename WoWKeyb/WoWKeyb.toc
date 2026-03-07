@@ -2,7 +2,7 @@
 ## Title: WoWKeyb
 ## Notes: Apply keybinding profiles from WoWKeyb (wowkeyb.gg)
 ## Author: WoWKeyb
-## Version: 1.2.11
+## Version: 1.2.12
 ## SavedVariables: WoWKeybDB
 
 libs/LibStub/LibStub.lua
