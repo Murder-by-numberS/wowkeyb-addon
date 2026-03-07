@@ -2485,6 +2485,22 @@ local function createSettingsPanel()
 
         local mismatchLines = {}
         local matchingProfiles = {}
+        local function summarizeNames(items, maxShown)
+            local count = #items
+            if count == 0 then
+                return "none"
+            end
+            local shown = {}
+            local limit = math.min(count, maxShown)
+            for i = 1, limit do
+                shown[#shown + 1] = tostring(items[i])
+            end
+            local summary = table.concat(shown, ", ")
+            if count > maxShown then
+                summary = summary .. string.format(" ... +%d more", count - maxShown)
+            end
+            return summary
+        end
         UIDropDownMenu_Initialize(profileDropdown, function(self, level)
             for _, name in ipairs(selectorOptions) do
                 local info = UIDropDownMenu_CreateInfo()
@@ -2533,19 +2549,29 @@ local function createSettingsPanel()
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
 
+        local mismatchCount = #mismatchLines
+        local mismatchLinesToShow = {}
+        local mismatchLimit = 6
+        for i = 1, math.min(mismatchCount, mismatchLimit) do
+            mismatchLinesToShow[#mismatchLinesToShow + 1] = mismatchLines[i]
+        end
+
         local statusLines = {
-            string.format("Context: %s / %s / %s", tostring(classLabel), tostring(specLabel), tostring(heroLabel)),
-            string.format("Context key: %s", tostring(contextKey)),
-            string.format("Preferred profile: %s", tostring(preferredProfile or "none")),
-            string.format("Matching profiles: %s", (#matchingProfiles > 0 and table.concat(matchingProfiles, ", ") or "none")),
+            string.format("Character setup: %s / %s / %s", tostring(classLabel), tostring(specLabel), tostring(heroLabel)),
+            string.format("Auto-select key: %s", tostring(contextKey)),
+            string.format("Preferred for this setup: %s", tostring(preferredProfile or "none")),
+            string.format("Profiles for this setup (%d): %s", #matchingProfiles, summarizeNames(matchingProfiles, 6)),
             "",
         }
-        if #mismatchLines == 0 then
-            statusLines[#statusLines + 1] = "Non-matching profiles: none"
+        if mismatchCount == 0 then
+            statusLines[#statusLines + 1] = "Other profiles: none"
         else
-            statusLines[#statusLines + 1] = "Non-matching profiles:"
-            for _, line in ipairs(mismatchLines) do
+            statusLines[#statusLines + 1] = string.format("Other profiles (%d):", mismatchCount)
+            for _, line in ipairs(mismatchLinesToShow) do
                 statusLines[#statusLines + 1] = line
+            end
+            if mismatchCount > mismatchLimit then
+                statusLines[#statusLines + 1] = string.format(" - ... +%d more (use /wowkeyb contexts)", mismatchCount - mismatchLimit)
             end
         end
         profileStatusText:SetText(table.concat(statusLines, "\n"))
@@ -2663,7 +2689,7 @@ local function createSettingsPanel()
 
     local helpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
-    helpText:SetWidth(520)
+    helpText:SetWidth(280)
     helpText:SetJustifyH("LEFT")
     helpText:SetText("Tip: Selecting a profile auto-applies it. Use /wowkeyb switch <name> to swap profiles, then move bars in WoW Edit Mode.")
 
