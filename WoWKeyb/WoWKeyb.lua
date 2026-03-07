@@ -2411,9 +2411,15 @@ local function createSettingsPanel()
 
     local profileStatusText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     profileStatusText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
-    profileStatusText:SetWidth(460)
+    profileStatusText:SetWidth(360)
     profileStatusText:SetJustifyH("LEFT")
     profileStatusText:SetJustifyV("TOP")
+    if profileStatusText.SetWordWrap then
+        profileStatusText:SetWordWrap(true)
+    end
+    if profileStatusText.SetMaxLines then
+        profileStatusText:SetMaxLines(18)
+    end
     profileStatusText:SetText("")
 
     local function refreshProfileSelector()
@@ -2483,10 +2489,16 @@ local function createSettingsPanel()
                     end
                     if diagnostics and not diagnostics.matches then
                         displayName = string.format("%s - NO MATCH (%s)", displayName, diagnostics.reasonSummary)
+                        local profileClass = tostring(profile and profile.class or "Unknown")
+                        local profileSpec = tostring(profile and (profile.spec or profile.spec_id or profile.specId or profile.specialization) or "-")
+                        local profileHero = tostring(profile and (profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId) or "-")
                         mismatchLines[#mismatchLines + 1] = string.format(
-                            " - %s: %s",
+                            " - %s: %s (profile: %s / %s / %s)",
                             name,
-                            table.concat(diagnostics.reasons, " | ")
+                            tostring(diagnostics.reasonSummary or "unknown"),
+                            profileClass,
+                            profileSpec,
+                            profileHero
                         )
                     else
                         matchingProfiles[#matchingProfiles + 1] = name
