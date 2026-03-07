@@ -1299,7 +1299,8 @@ applyProfile = function(profile)
         -- Build explicit slot -> key mapping from layout slotKeys so action bar bindings
         -- follow the action bar editor even when spell records are sparse.
         for barIdx, bar in ipairs(profile.layout.bars) do
-            local slotKeys = bar and bar.slotKeys
+            local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
+                or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
             if type(slotKeys) == "table" then
                 for slotIdx = 1, 12 do
                     local rawKey = slotKeys[slotIdx]
@@ -1378,6 +1379,19 @@ applyProfile = function(profile)
         table.sort(sortedSlots)
         for _, slot in ipairs(sortedSlots) do
             entries[#entries + 1] = slotToData[slot]
+        end
+
+        -- In layout mode, clear slots that are not populated by the imported profile.
+        -- This prevents stale spells from previous profiles appearing as "wrong replacements".
+        if type(ClearAction) == "function" then
+            for slot = 1, 60 do
+                if not slotToData[slot] then
+                    local actionSlot = toBlizzardActionSlot(slot)
+                    pcall(function()
+                        ClearAction(actionSlot)
+                    end)
+                end
+            end
         end
     else
         -- Non-layout mode keeps legacy key-first behavior.
