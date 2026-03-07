@@ -1568,25 +1568,46 @@ local function buildViewerData(profile)
 
         local existingIcon = spell.icon
         if existingIcon and tostring(existingIcon) ~= "" then
-            return existingIcon
+            local iconStr = tostring(existingIcon)
+            local lowerIcon = iconStr:lower()
+            -- WoW textures cannot use web URLs, so ignore those and resolve locally.
+            if not lowerIcon:find("^https?://") then
+                return existingIcon
+            end
         end
 
         local spellId = tonumber(spell.spellId or spell.spell_id)
         if not spellId then
-            return nil
+            local rawSpellId = tostring(spell.spellId or spell.spell_id or "")
+            local numericOnly = rawSpellId:gsub("[^0-9]", "")
+            if numericOnly ~= "" then
+                spellId = tonumber(numericOnly)
+            end
         end
 
-        if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+        if spellId and C_Spell and type(C_Spell.GetSpellTexture) == "function" then
             local okTexture, texture = pcall(C_Spell.GetSpellTexture, spellId)
             if okTexture and texture and tostring(texture) ~= "" then
                 return texture
             end
         end
-        if _G.GetSpellInfo then
+        if spellId and _G.GetSpellInfo then
             local _, _, texture = _G.GetSpellInfo(spellId)
             if texture and tostring(texture) ~= "" then
                 return texture
             end
+        end
+
+        local spellName = tostring(spell.name or "")
+        if spellName ~= "" and _G.GetSpellInfo then
+            local _, _, texture = _G.GetSpellInfo(spellName)
+            if texture and tostring(texture) ~= "" then
+                return texture
+            end
+        end
+
+        if existingIcon and tostring(existingIcon) ~= "" then
+            return existingIcon
         end
         return nil
     end
