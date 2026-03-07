@@ -120,6 +120,24 @@ local function normalizeKey(key)
     normalized = normalized:gsub("^%-", "")
     normalized = normalized:gsub("%-$", "")
     normalized = normalized:gsub("CONTROL%-", "CTRL-")
+    -- Expand shorthand modifier aliases often seen in compact displays:
+    -- S+5 -> SHIFT-5, C+S+5 -> CTRL-SHIFT-5, A+1 -> ALT-1
+    local parts = {}
+    for part in normalized:gmatch("[^-]+") do
+        parts[#parts + 1] = part
+    end
+    if #parts > 1 then
+        for i = 1, (#parts - 1) do
+            if parts[i] == "S" then
+                parts[i] = "SHIFT"
+            elseif parts[i] == "C" then
+                parts[i] = "CTRL"
+            elseif parts[i] == "A" then
+                parts[i] = "ALT"
+            end
+        end
+        normalized = table.concat(parts, "-")
+    end
     -- Support symbol shorthand often used for shifted numbers.
     local shiftedNumberBySymbol = {
         ["!"] = "1", ["@"] = "2", ["#"] = "3", ["$"] = "4", ["%"] = "5",
@@ -1235,6 +1253,18 @@ local function applyBlizzardDefaultProfile()
             end
         end
     end
+
+    -- Re-apply Blizzard-style primary bar defaults:
+    -- ActionButton1..12 => 1,2,3,4,5,6,7,8,9,0,-,=
+    local defaultMainBarKeys = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=" }
+    for slot = 1, 12 do
+        local command = SLOT_COMMANDS[slot]
+        local key = defaultMainBarKeys[slot]
+        if command and key and key ~= "" then
+            SetBinding(key, command)
+        end
+    end
+
     if type(GetCurrentBindingSet) == "function" and type(SaveBindings) == "function" then
         local bindingSet = GetCurrentBindingSet()
         SaveBindings(bindingSet)
