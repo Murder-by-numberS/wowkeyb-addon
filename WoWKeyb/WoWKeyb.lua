@@ -1222,6 +1222,188 @@ local function actionSlotHasMacro(actionSlot)
     return actionType == "macro"
 end
 
+local function normalizeMacroBodyForMatch(body)
+    if not body then return "" end
+    local normalized = tostring(body):gsub("\r\n", "\n"):gsub("\r", "\n")
+    normalized = normalized:gsub("%s+$", "")
+    normalized = normalized:gsub("^%s+", "")
+    return normalized
+end
+
+local function sanitizeMacroName(rawName)
+    local name = tostring(rawName or ""):gsub("[\r\n\t]", " ")
+    name = name:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        name = "WoWKeybMacro"
+    end
+    -- WoW macro names are limited to 16 characters.
+    if #name > 16 then
+        name = name:sub(1, 16)
+    end
+    return name
+end
+
+local function buildProfileMacroLookup(profile)
+    local lookup = { byId = {}, byName = {} }
+    if type(profile) ~= "table" or type(profile.macros) ~= "table" then
+        return lookup
+    end
+    for _, macro in ipairs(profile.macros) do
+        if type(macro) == "table" then
+            local macroId = tostring(macro.id or macro.macroId or macro.macro_id or "")
+            local macroName = tostring(macro.name or macro.macroName or macro.macro_name or "")
+            local macroBody = macro.macroText or macro.macro_text or macro.text or macro.body
+            if macroBody and tostring(macroBody):trim() ~= "" then
+                if macroId ~= "" then
+                    lookup.byId[macroId] = {
+                        name = macroName,
+                        body = tostring(macroBody),
+                    }
+                end
+                local normalizedName = normalizeSpellText(macroName)
+                if normalizedName ~= "" then
+                    lookup.byName[normalizedName] = {
+                        name = macroName,
+                        body = tostring(macroBody),
+                    }
+                end
+            end
+        end
+    end
+    return lookup
+end
+
+local function extractMacroPayload(spell, macroLookup)
+    if type(spell) ~= "table" then return nil end
+
+    local actionType = tostring(spell.actionType or spell.action_type or ""):lower()
+    local isMacro = spell.isMacro == true or actionType == "macro"
+    local spellIdRaw = tostring(spell.spellId or spell.spell_id or "")
+    local macroId = tostring(spell.macroId or spell.macro_id or "")
+    if macroId == "" then
+        local fromSpellId = spellIdRaw:match("^macro:(.+)$")
+        if fromSpellId and fromSpellId ~= "" then
+            macroId = tostring(fromSpellId)
+            isMacro = true
+        end
+    end
+    if spellIdRaw:lower():find("^macro:") then
+        isMacro = true
+    end
+
+    if not isMacro then
+        return nil
+    end
+
+    local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
+    local macroName = spell.name or spell.macroName or spell.macro_name or "WoWKeybMacro"
+
+    if (not macroText or tostring(macroText):trim() == "") and macroLookup then
+        if macroId ~= "" and macroLookup.byId[macroId] then
+            macroText = macroLookup.byId[macroId].body
+            macroName = macroLookup.byId[macroId].name or macroName
+        end
+        if (not macroText or tostring(macroText):trim() == "") then
+            local normalizedName = normalizeSpellText(macroName)
+            if normalizedName ~= "" and macroLookup.byName[normalizedName] then
+                macroText = macroLookup.byName[normalizedName].body
+                macroName = macroLookup.byName[normalizedName].name or macroName
+            end
+        end
+    end
+
+    if not macroText or tostring(macroText):trim() == "" then
+        return nil
+    end
+
+    return {
+        macroId = macroId,
+        name = sanitizeMacroName(macroName),
+        body = tostring(macroText),
+    }
+end
+
+local function getAllMacroIndexes()
+    local list = {}
+    if type(GetNumMacros) ~= "function" then
+        return list
+    end
+    local globalCount, characterCount = GetNumMacros()
+    local total = (tonumber(globalCount) or 0) + (tonumber(characterCount) or 0)
+    for index = 1, total do
+        list[#list + 1] = index
+    end
+    return list
+end
+
+local function findExistingMacroByBody(body)
+    local normalizedTarget = normalizeMacroBodyForMatch(body)
+    if normalizedTarget == "" or type(GetMacroInfo) ~= "function" then
+        return nil
+    end
+
+    for _, index in ipairs(getAllMacroIndexes()) do
+        local _, _, macroBody = GetMacroInfo(index)
+        if normalizeMacroBodyForMatch(macroBody) == normalizedTarget then
+            return index
+        end
+    end
+    return nil
+end
+
+local function macroNameExists(name)
+    if not name or name == "" or type(GetMacroInfo) ~= "function" then
+        return false
+    end
+    for _, index in ipairs(getAllMacroIndexes()) do
+        local macroName = GetMacroInfo(index)
+        if macroName == name then
+            return true
+        end
+    end
+    return false
+end
+
+local function buildUniqueMacroName(baseName)
+    local base = sanitizeMacroName(baseName)
+    if not macroNameExists(base) then
+        return base
+    end
+    for i = 1, 99 do
+        local suffix = tostring(i)
+        local allowedBaseLength = 16 - #suffix
+        if allowedBaseLength < 1 then allowedBaseLength = 1 end
+        local candidate = base:sub(1, allowedBaseLength) .. suffix
+        if not macroNameExists(candidate) then
+            return candidate
+        end
+    end
+    return base:sub(1, 15) .. "9"
+end
+
+local function ensureMacroForPayload(payload)
+    if type(payload) ~= "table" or not payload.body or payload.body == "" then
+        return nil, "missing-body"
+    end
+    local existing = findExistingMacroByBody(payload.body)
+    if existing then
+        return existing, "reused-existing-body"
+    end
+    if type(CreateMacro) ~= "function" then
+        return nil, "create-macro-unavailable"
+    end
+
+    local macroName = buildUniqueMacroName(payload.name or "WoWKeybMacro")
+    local icon = "INV_MISC_QUESTIONMARK"
+    local okCreate, createdIndex = pcall(function()
+        return CreateMacro(macroName, icon, payload.body, true)
+    end)
+    if okCreate and createdIndex and tonumber(createdIndex) and tonumber(createdIndex) > 0 then
+        return tonumber(createdIndex), "created"
+    end
+    return nil, "create-failed"
+end
+
 local function syncProfileSpellsFromActionBars(profileName)
     ensureDBDefaults()
     local targetName = profileName or WoWKeybDB.currentProfile
@@ -1519,6 +1701,7 @@ applyProfile = function(profile)
     local GetSpellInfo = C_Spell and C_Spell.GetSpellName or _G.GetSpellInfo
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
     local layoutSlotToKey = {}
+    local macroLookup = buildProfileMacroLookup(profile)
 
     if hasLayout then
         -- Build explicit slot -> key mapping from layout slotKeys so action bar bindings
@@ -1729,13 +1912,14 @@ applyProfile = function(profile)
                 end
             end
             local spellName = spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName
+            local macroPayload = extractMacroPayload(spell, macroLookup)
 
             if spellId then
                 local nameFromId = GetSpellInfo(spellId)
                 if nameFromId then spellName = nameFromId end
             end
 
-            if (not spellId and not spellName) or spellName == "" then
+            if (not macroPayload) and ((not spellId and not spellName) or spellName == "") then
                 skipped = skipped + 1
                 if debugApplySlots then
                     addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
@@ -1750,9 +1934,37 @@ applyProfile = function(profile)
                 local slotHasMacro = actionSlotHasMacro(actionSlot)
                 local placeResult = "not-attempted"
                 local placeReason = "n/a"
+                local macroResult = "n/a"
 
                 -- 1. Place spell on action bar (default WoW UI)
-                if not keepMacro then
+                if macroPayload then
+                    local macroIndex, ensureReason = ensureMacroForPayload(macroPayload)
+                    macroResult = ensureReason or "unknown"
+                    if macroIndex and type(PickupMacro) == "function" then
+                        if type(ClearAction) == "function" then
+                            pcall(function()
+                                ClearAction(actionSlot)
+                            end)
+                        end
+                        local pickedUpMacro = false
+                        pcall(function()
+                            PickupMacro(macroIndex)
+                        end)
+                        pickedUpMacro = GetCursorInfo() ~= nil
+                        if pickedUpMacro then
+                            PlaceAction(actionSlot)
+                            ClearCursor()
+                            placeResult = "placed"
+                            placeReason = "macro-" .. tostring(ensureReason or "ready")
+                        else
+                            placeResult = "skip"
+                            placeReason = "macro-pickup-failed"
+                        end
+                    else
+                        placeResult = "skip"
+                        placeReason = "macro-missing"
+                    end
+                elseif not keepMacro then
                     -- Clear target slot first so failed pickup does not leave stale/incorrect icons.
                     if type(ClearAction) == "function" then
                         pcall(function()
@@ -1856,6 +2068,7 @@ applyProfile = function(profile)
                         .. " spellId=" .. tostring(spellId or "")
                         .. " spell=\"" .. tostring(spellName or "") .. "\""
                         .. " place=" .. tostring(placeResult) .. "(" .. tostring(placeReason) .. ")"
+                        .. " macro=" .. tostring(macroResult)
                         .. " bind=" .. tostring(bindResult) .. "(" .. tostring(bindReason) .. ")"
                         .. " actualSpellId=" .. tostring(actualSpellId ~= "" and actualSpellId or "-")
                         .. " actualSpell=\"" .. tostring(actualSpellName ~= "" and actualSpellName or "-") .. "\"")
