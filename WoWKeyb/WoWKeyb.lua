@@ -1081,8 +1081,13 @@ local function parseMacroSpellData(body)
         token = token:gsub("^%s+", ""):gsub("%s+$", "")
         token = token:gsub("^!+", "")
         token = token:gsub("^reset=[^,%s;]+%s*", "")
+        token = token:gsub("^%[[^%]]+%]%s*", "")
         token = token:gsub("^@[^%s]+%s*", "")
         token = token:gsub("^target=[^%s]+%s*", "")
+        token = token:gsub("^%[[^%]]+%]%s*", "")
+        token = token:gsub("%s*%b()%s*$", "")
+        token = token:gsub("%s*%.+$", "")
+        token = token:gsub("^%s*null%s*$", "")
         token = token:gsub("^%s+", ""):gsub("%s+$", "")
         if token == "" then return end
 
@@ -1145,6 +1150,25 @@ local function actionSlotMacroContainsSpell(actionSlot, spellId, spellName, pars
         return false
     end
 
+    -- Prefer native WoW macro spell resolution when available.
+    if type(GetMacroSpell) == "function" then
+        local macroSpellId, macroSpellName = GetMacroSpell(actionId)
+        local targetId = tonumber(spellId)
+        if targetId and macroSpellId and tonumber(macroSpellId) == targetId then
+            return true
+        end
+        local targetName = normalizeSpellText(spellName)
+        if targetName ~= "" and macroSpellName and normalizeSpellText(macroSpellName) == targetName then
+            return true
+        end
+        if targetId and macroSpellName and _G.GetSpellInfo then
+            local resolvedTargetName = _G.GetSpellInfo(targetId)
+            if resolvedTargetName and normalizeSpellText(resolvedTargetName) == normalizeSpellText(macroSpellName) then
+                return true
+            end
+        end
+    end
+
     local cacheKey = tostring(actionId) .. ":" .. tostring(body)
     if not parseCache[cacheKey] then
         parseCache[cacheKey] = parseMacroSpellData(body)
@@ -1160,6 +1184,13 @@ local function actionSlotMacroContainsSpell(actionSlot, spellId, spellName, pars
     local targetName = normalizeSpellText(spellName)
     if targetName ~= "" and parsed.spellNames[targetName] then
         return true
+    end
+    if targetId and _G.GetSpellInfo then
+        local resolvedTargetName = _G.GetSpellInfo(targetId)
+        local normalizedResolved = normalizeSpellText(resolvedTargetName)
+        if normalizedResolved ~= "" and parsed.spellNames[normalizedResolved] then
+            return true
+        end
     end
 
     return false
