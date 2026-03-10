@@ -895,6 +895,32 @@ local function getLayoutBarIndex(layoutBarIndexById, barId)
     return nil
 end
 
+local function resolveSlotFromLayoutKeys(profile, wowKey)
+    if not profile or not profile.layout or type(profile.layout.bars) ~= "table" then
+        return nil
+    end
+    if not wowKey or wowKey == "" then
+        return nil
+    end
+
+    for barIdx, bar in ipairs(profile.layout.bars) do
+        local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
+            or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
+            or {}
+        for slotIdx = 1, 12 do
+            local slotKey = normalizeKey(slotKeys[slotIdx] or "")
+            if slotKey == wowKey then
+                local slot = ((barIdx - 1) * 12) + slotIdx
+                if slot >= 1 and slot <= 60 then
+                    return slot
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 local function resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
     local keybindBarId = keybind and (keybind.barId or keybind.bar_id) or nil
     if not keybind or not keybindBarId or (keybind.slotIndex or keybind.slot_index) == nil then
@@ -979,8 +1005,18 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     end
 
     -- 2) Fallback for legacy payloads: infer bar+slot by key grouping
+    if hasLayout then
+        -- In layout mode, honor the profile's actual slotKeys first.
+        local layoutSlot = resolveSlotFromLayoutKeys(profile, wowKey)
+        if layoutSlot then
+            return layoutSlot
+        end
+        -- If layout exists but key is not present in slotKeys, avoid default SHIFT->bar2 style
+        -- fallback so stale mappings do not place abilities on the wrong bar.
+        return nil
+    end
     local layoutMap = KEY_TO_LAYOUT_SLOT[wowKey]
-    if hasLayout and layoutMap and profile.layout.bars[layoutMap.barIndex + 1] then
+    if layoutMap then
         local slot = (layoutMap.barIndex * 12) + layoutMap.slotIndex + 1
         if slot >= 1 and slot <= 60 then
             return slot
@@ -1625,7 +1661,7 @@ applyProfile = function(profile)
         local slot = entry.slot
         local wowKey = entry.wowKey
         local debugSpellId = tostring(spell and (spell.spellId or spell.spell_id or spell.id) or "")
-        local debugSpellName = tostring(spell and spell.name or "")
+        local debugSpellName = tostring(spell and (spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName) or "")
         if not slot then
             skipped = skipped + 1
             if debugApplySlots then
@@ -1764,13 +1800,18 @@ applyProfile = function(profile)
                 end
 
                 if debugApplySlots then
+                    local actualSpell = readSpellFromActionSlot(actionSlot)
+                    local actualSpellId = actualSpell and tostring(actualSpell.spellId or "") or ""
+                    local actualSpellName = actualSpell and tostring(actualSpell.name or "") or ""
                     addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                         .. " blizzSlot=" .. tostring(actionSlot)
                         .. " key=" .. tostring(wowKey or "")
                         .. " spellId=" .. tostring(spellId or "")
                         .. " spell=\"" .. tostring(spellName or "") .. "\""
                         .. " place=" .. tostring(placeResult) .. "(" .. tostring(placeReason) .. ")"
-                        .. " bind=" .. tostring(bindResult) .. "(" .. tostring(bindReason) .. ")")
+                        .. " bind=" .. tostring(bindResult) .. "(" .. tostring(bindReason) .. ")"
+                        .. " actualSpellId=" .. tostring(actualSpellId ~= "" and actualSpellId or "-")
+                        .. " actualSpell=\"" .. tostring(actualSpellName ~= "" and actualSpellName or "-") .. "\"")
                 end
             end
         end
