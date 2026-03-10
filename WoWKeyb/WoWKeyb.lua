@@ -2383,16 +2383,50 @@ local function serializeSyncedProfile(profileName, profile)
 
     local pName = tostring(profile.name or profileName or "ImportedProfile")
     local keybindChunks = {}
+    local macroChunks = {}
+    local macroById = {}
+    local function normalizeMacroId(raw)
+        local value = tostring(raw or "")
+        if value == "" then return "" end
+        return value
+    end
+    local function collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName)
+        local id = normalizeMacroId(macroId)
+        local text = tostring(macroText or "")
+        if id == "" or text == "" then return end
+        if macroById[id] then return end
+        macroById[id] = true
+        macroChunks[#macroChunks + 1] = table.concat({
+            '{"id":"', jsonEscape(id),
+            '","name":"', jsonEscape(macroName or "WoWKeybMacro"),
+            '","macroText":"', jsonEscape(text),
+            '","sourceSpellId":"', jsonEscape(sourceSpellId or ""),
+            '","sourceSpellName":"', jsonEscape(sourceSpellName or ""),
+            '"}'
+        })
+    end
     local keybinds = profile.keybinds or {}
     for _, kb in ipairs(keybinds) do
         local spell = kb.spell or {}
         local spellId = tostring(spell.spellId or spell.spell_id or "")
         local key = tostring(kb.key or "")
+        local actionType = tostring(spell.actionType or spell.action_type or "")
+        local isMacro = (spell.isMacro == true) or (actionType:lower() == "macro") or spellId:lower():find("^macro:") ~= nil
+        local macroId = normalizeMacroId(spell.macroId or spell.macro_id or spellId:match("^macro:(.+)$"))
+        local macroText = tostring(spell.macroText or spell.macro_text or spell.text or spell.body or "")
+        local sourceSpellId = tostring(spell.sourceSpellId or spell.source_spell_id or "")
+        local sourceSpellName = tostring(spell.sourceSpellName or spell.source_spell_name or "")
         local spellJson = table.concat({
             '{"spellId":"', jsonEscape(spellId),
             '","name":"', jsonEscape(spell.name or ""),
             '","icon":"', jsonEscape(spell.icon or ""),
             '","description":"', jsonEscape(spell.description or ""),
+            '","actionType":"', jsonEscape(actionType ~= "" and actionType or (isMacro and "macro" or "spell")),
+            '","isMacro":', tostring(isMacro and true or false),
+            ',"macroId":"', jsonEscape(macroId),
+            '","macroText":"', jsonEscape(macroText),
+            '","sourceSpellId":"', jsonEscape(sourceSpellId),
+            '","sourceSpellName":"', jsonEscape(sourceSpellName),
             '"}'
         })
         local kbJson = table.concat({
@@ -2403,6 +2437,22 @@ local function serializeSyncedProfile(profileName, profile)
             '}'
         })
         table.insert(keybindChunks, kbJson)
+        if isMacro and macroId ~= "" and macroText ~= "" then
+            collectMacro(macroId, spell.name or spell.macroName or "WoWKeybMacro", macroText, sourceSpellId, sourceSpellName)
+        end
+    end
+
+    if type(profile.macros) == "table" then
+        for _, macro in ipairs(profile.macros) do
+            if type(macro) == "table" then
+                local macroId = normalizeMacroId(macro.id or macro.macroId or macro.macro_id)
+                local macroText = macro.macroText or macro.macro_text or macro.text or macro.body
+                local macroName = macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"
+                local sourceSpellId = macro.sourceSpellId or macro.source_spell_id or ""
+                local sourceSpellName = macro.sourceSpellName or macro.source_spell_name or ""
+                collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName)
+            end
+        end
     end
 
     local layout = profile.layout or {}
@@ -2446,6 +2496,7 @@ local function serializeSyncedProfile(profileName, profile)
     local profileJson = table.concat({
         '{"name":"', jsonEscape(pName),
         '","keybinds":', toJSONArray(keybindChunks),
+        ',"macros":', toJSONArray(macroChunks),
         ',"layout":', layoutJson,
         '}'
     })
@@ -2680,6 +2731,20 @@ local function buildViewerData(profile)
                 end
             end
             local macroPayload = extractMacroPayload(spell, macroLookup)
+            if not macroPayload then
+                local actionType = tostring(spell.actionType or spell.action_type or ""):lower()
+                local spellIdRaw = tostring(spell.spellId or spell.spell_id or "")
+                local isMacroSpell = spell.isMacro == true or actionType == "macro" or spellIdRaw:find("^macro:") ~= nil
+                if isMacroSpell then
+                    local fallbackMacroId = tostring(spell.macroId or spell.macro_id or spellIdRaw:match("^macro:(.+)$") or "")
+                    macroPayload = {
+                        macroId = fallbackMacroId,
+                        name = tostring(spell.name or spell.macroName or spell.macro_name or "WoWKeybMacro"),
+                        body = tostring(spell.macroText or spell.macro_text or spell.text or spell.body or ""),
+                        source = "spell-fallback",
+                    }
+                end
+            end
             local spellIcon = (macroPayload and resolveViewerMacroIcon(spell, macroPayload)) or resolveViewerSpellIcon(spell)
             if macroPayload then
                 local macroEntry = ensureMacroEntry(macroPayload)
