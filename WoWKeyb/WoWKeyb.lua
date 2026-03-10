@@ -32,6 +32,14 @@ local function getAddonVersion()
     return tostring(version)
 end
 
+local function addonChat(message)
+    if DEFAULT_CHAT_FRAME and type(DEFAULT_CHAT_FRAME.AddMessage) == "function" then
+        DEFAULT_CHAT_FRAME:AddMessage(tostring(message or ""))
+        return
+    end
+    print(tostring(message or ""))
+end
+
 -- Default saved variables
 local function ensureDBDefaults()
     if type(WoWKeybDB) ~= "table" then
@@ -1495,11 +1503,19 @@ applyProfile = function(profile)
                         local existingMatchesLayoutKey = expectedKey and expectedKey ~= ""
                             and existing.wowKey
                             and existing.wowKey == expectedKey
+                        local existingSpell = existing.spell or {}
+                        local existingHasSpellIdentity = (existingSpell.spellId or existingSpell.spell_id or existingSpell.id
+                            or existingSpell.name or existingSpell.spellName or existingSpell.spell_name) and true or false
+                        local newSpell = keybind.spell or {}
+                        local newHasSpellIdentity = (newSpell.spellId or newSpell.spell_id or newSpell.id
+                            or newSpell.name or newSpell.spellName or newSpell.spell_name) and true or false
 
                         local shouldReplace = false
                         if newMatchesLayoutKey and not existingMatchesLayoutKey then
                             shouldReplace = true
                         elseif keybindHasExplicitSlot and not existing.hasExplicitSlot then
+                            shouldReplace = true
+                        elseif newMatchesLayoutKey and existingMatchesLayoutKey and newHasSpellIdentity and not existingHasSpellIdentity then
                             shouldReplace = true
                         end
 
@@ -1584,7 +1600,7 @@ applyProfile = function(profile)
         if not slot then
             skipped = skipped + 1
             if debugApplySlots then
-                print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=<none> key=" .. tostring(wowKey or "")
+                addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=<none> key=" .. tostring(wowKey or "")
                     .. " spellId=" .. debugSpellId .. " spell=\"" .. debugSpellName .. "\" result=skip reason=no-slot")
             end
         else
@@ -1596,7 +1612,7 @@ applyProfile = function(profile)
                     spellId = tonumber(numericOnly)
                 end
             end
-            local spellName = spell.name
+            local spellName = spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName
 
             if spellId then
                 local nameFromId = GetSpellInfo(spellId)
@@ -1606,7 +1622,7 @@ applyProfile = function(profile)
             if (not spellId and not spellName) or spellName == "" then
                 skipped = skipped + 1
                 if debugApplySlots then
-                    print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                    addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                         .. " blizzSlot=" .. tostring(toBlizzardActionSlot(slot))
                         .. " key=" .. tostring(wowKey or "")
                         .. " spellId=" .. tostring(spellId or "")
@@ -1635,7 +1651,7 @@ applyProfile = function(profile)
                     local pickedUp = false
                     if spellId and type(PickupSpell) == "function" then
                         if debugApplySlots then
-                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                            addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                                 .. " blizzSlot=" .. tostring(actionSlot)
                                 .. " try=pickup-by-id spellId=" .. tostring(spellId))
                         end
@@ -1645,7 +1661,7 @@ applyProfile = function(profile)
                         local cursorType = GetCursorInfo()
                         pickedUp = cursorType ~= nil
                         if debugApplySlots then
-                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                            addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                                 .. " blizzSlot=" .. tostring(actionSlot)
                                 .. " try=pickup-by-id result=" .. tostring(pickedUp and "ok" or "fail")
                                 .. " cursorType=" .. tostring(cursorType))
@@ -1653,7 +1669,7 @@ applyProfile = function(profile)
                     end
                     if (not pickedUp) and spellName and spellName ~= "" and type(PickupSpell) == "function" then
                         if debugApplySlots then
-                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                            addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                                 .. " blizzSlot=" .. tostring(actionSlot)
                                 .. " try=pickup-by-name spell=\"" .. tostring(spellName) .. "\"")
                         end
@@ -1661,7 +1677,7 @@ applyProfile = function(profile)
                         local cursorType = GetCursorInfo()
                         pickedUp = cursorType ~= nil
                         if debugApplySlots then
-                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                            addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                                 .. " blizzSlot=" .. tostring(actionSlot)
                                 .. " try=pickup-by-name result=" .. tostring(pickedUp and "ok" or "fail")
                                 .. " cursorType=" .. tostring(cursorType))
@@ -1719,7 +1735,7 @@ applyProfile = function(profile)
                 end
 
                 if debugApplySlots then
-                    print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                    addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
                         .. " blizzSlot=" .. tostring(actionSlot)
                         .. " key=" .. tostring(wowKey or "")
                         .. " spellId=" .. tostring(spellId or "")
@@ -2102,7 +2118,7 @@ local function buildViewerData(profile)
             end
         end
 
-        local spellName = tostring(spell.name or "")
+        local spellName = tostring(spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName or "")
         if spellName ~= "" and _G.GetSpellInfo then
             local _, _, texture = _G.GetSpellInfo(spellName)
             if texture and tostring(texture) ~= "" then
@@ -2160,7 +2176,7 @@ local function buildViewerData(profile)
     for _, kb in ipairs(keybinds) do
         if kb and kb.spell and (kb.spell.spellId or kb.spell.spell_id or kb.spell.id or kb.spell.name) then
             local spell = kb.spell or {}
-            local spellName = tostring(spell.name or "")
+            local spellName = tostring(spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName or "")
             local spellIcon = resolveViewerSpellIcon(spell)
             local wowKey = normalizeKey(kb.key or "")
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
@@ -2198,13 +2214,26 @@ local function buildViewerData(profile)
                         end
                     end
                 end
-                slotData[slot] = slotData[slot] or {
+                local nextEntry = {
                     key = tostring(kb.key or ""),
                     spellName = spellName ~= "" and spellName or "(no spell)",
                     icon = spellIcon,
                 }
+                local existingEntry = slotData[slot]
+                if not existingEntry then
+                    slotData[slot] = nextEntry
+                else
+                    local existingHasVisual = existingEntry.icon and tostring(existingEntry.icon) ~= ""
+                    local nextHasVisual = nextEntry.icon and tostring(nextEntry.icon) ~= ""
+                    local existingHasName = existingEntry.spellName and existingEntry.spellName ~= "" and existingEntry.spellName ~= "(no spell)"
+                    local nextHasName = nextEntry.spellName and nextEntry.spellName ~= "" and nextEntry.spellName ~= "(no spell)"
+                    if (nextHasVisual and not existingHasVisual)
+                        or (nextHasName and not existingHasName) then
+                        slotData[slot] = nextEntry
+                    end
+                end
                 if debugViewerSlots then
-                    print("|cffffcc00[WoWKeyb]|r [viewer-debug] slot=" .. tostring(slot)
+                    addonChat("|cffffcc00[WoWKeyb]|r [viewer-debug] slot=" .. tostring(slot)
                         .. " key=" .. tostring(kb.key or "")
                         .. " normalized=" .. tostring(wowKey or "")
                         .. " spellId=" .. tostring(spell.spellId or spell.spell_id or spell.id or "")
@@ -2212,7 +2241,7 @@ local function buildViewerData(profile)
                         .. " icon=" .. tostring(spellIcon and "yes" or "no"))
                 end
             elseif debugViewerSlots then
-                print("|cffffcc00[WoWKeyb]|r [viewer-debug] slot=<none>"
+                addonChat("|cffffcc00[WoWKeyb]|r [viewer-debug] slot=<none>"
                     .. " key=" .. tostring(kb.key or "")
                     .. " normalized=" .. tostring(wowKey or "")
                     .. " spellId=" .. tostring(spell.spellId or spell.spell_id or spell.id or "")
