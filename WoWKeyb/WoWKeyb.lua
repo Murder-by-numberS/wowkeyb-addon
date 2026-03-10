@@ -1297,17 +1297,20 @@ local function extractMacroPayload(spell, macroLookup)
 
     local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
     local macroName = spell.name or spell.macroName or spell.macro_name or "WoWKeybMacro"
+    local payloadSource = "spell"
 
     if (not macroText or tostring(macroText):trim() == "") and macroLookup then
         if macroId ~= "" and macroLookup.byId[macroId] then
             macroText = macroLookup.byId[macroId].body
             macroName = macroLookup.byId[macroId].name or macroName
+            payloadSource = "profile-by-id"
         end
         if (not macroText or tostring(macroText):trim() == "") then
             local normalizedName = normalizeSpellText(macroName)
             if normalizedName ~= "" and macroLookup.byName[normalizedName] then
                 macroText = macroLookup.byName[normalizedName].body
                 macroName = macroLookup.byName[normalizedName].name or macroName
+                payloadSource = "profile-by-name"
             end
         end
     end
@@ -1320,6 +1323,7 @@ local function extractMacroPayload(spell, macroLookup)
         macroId = macroId,
         name = sanitizeMacroName(macroName),
         body = tostring(macroText),
+        source = payloadSource,
     }
 end
 
@@ -2059,6 +2063,18 @@ applyProfile = function(profile)
                 end
 
                 if debugApplySlots then
+                    local macroDebugId = macroPayload and tostring(macroPayload.macroId or "") or ""
+                    local macroDebugName = macroPayload and tostring(macroPayload.name or "") or ""
+                    local macroDebugSource = macroPayload and tostring(macroPayload.source or "") or ""
+                    local macroBodyLen = macroPayload and #tostring(macroPayload.body or "") or 0
+                    addonChat("|cffffcc00[WoWKeyb]|r [macro-debug] slot=" .. tostring(slot)
+                        .. " blizzSlot=" .. tostring(actionSlot)
+                        .. " key=" .. tostring(wowKey or "")
+                        .. " id=" .. tostring(macroDebugId ~= "" and macroDebugId or "-")
+                        .. " name=\"" .. tostring(macroDebugName ~= "" and macroDebugName or "-") .. "\""
+                        .. " bodyChars=" .. tostring(macroBodyLen)
+                        .. " source=" .. tostring(macroDebugSource ~= "" and macroDebugSource or "-")
+                        .. " ensure=" .. tostring(macroResult))
                     local actualSpell = readSpellFromActionSlot(actionSlot)
                     local actualSpellId = actualSpell and tostring(actualSpell.spellId or "") or ""
                     local actualSpellName = actualSpell and tostring(actualSpell.name or "") or ""
@@ -2410,9 +2426,54 @@ end
 local function buildViewerData(profile)
     local keyToEntries = {}
     local slotData = {}
+    local macroEntries = {}
     local keybinds = profile and profile.keybinds or {}
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
     local debugViewerSlots = WoWKeybDB.debugViewerSlots == true
+    local macroLookup = buildProfileMacroLookup(profile)
+    local macroBySignature = {}
+
+    local function formatMacroUsage(slot, key)
+        local keyLabel = tostring(key or "")
+        if keyLabel == "" then keyLabel = "-" end
+        if not slot then
+            return "Key " .. keyLabel
+        end
+        local barIdx = math.floor((slot - 1) / 12) + 1
+        local slotIdx = ((slot - 1) % 12) + 1
+        return string.format("Bar %d Slot %d (%s)", barIdx, slotIdx, keyLabel)
+    end
+
+    local function ensureMacroEntry(macroPayload)
+        if type(macroPayload) ~= "table" then return nil end
+        local signature = ""
+        if macroPayload.macroId and tostring(macroPayload.macroId) ~= "" then
+            signature = "id:" .. tostring(macroPayload.macroId)
+        else
+            local normalizedBody = normalizeMacroBodyForMatch(macroPayload.body)
+            if normalizedBody ~= "" then
+                signature = "body:" .. normalizedBody
+            else
+                signature = "name:" .. tostring(macroPayload.name or "")
+            end
+        end
+        if signature == "" then
+            return nil
+        end
+        local existing = macroBySignature[signature]
+        if existing then
+            return existing
+        end
+        local entry = {
+            name = tostring(macroPayload.name or "WoWKeybMacro"),
+            macroId = tostring(macroPayload.macroId or ""),
+            source = tostring(macroPayload.source or "spell"),
+            usages = {},
+        }
+        macroBySignature[signature] = entry
+        macroEntries[#macroEntries + 1] = entry
+        return entry
+    end
     local function resolveViewerSpellIcon(spell)
         if type(spell) ~= "table" then return nil end
         local function hasIcon(value)
@@ -2554,6 +2615,13 @@ local function buildViewerData(profile)
                     end
                 end
             end
+            local macroPayload = extractMacroPayload(spell, macroLookup)
+            if macroPayload then
+                local macroEntry = ensureMacroEntry(macroPayload)
+                if macroEntry then
+                    macroEntry.usages[#macroEntry.usages + 1] = formatMacroUsage(slot, kb.key or "")
+                end
+            end
 
             if slot then
                 if spellName == "" and _G.GetSpellInfo then
@@ -2608,6 +2676,23 @@ local function buildViewerData(profile)
         end
     end
 
+    if type(profile) == "table" and type(profile.macros) == "table" then
+        for _, macro in ipairs(profile.macros) do
+            if type(macro) == "table" then
+                local macroBody = macro.macroText or macro.macro_text or macro.text or macro.body
+                if macroBody and tostring(macroBody):trim() ~= "" then
+                    local seededPayload = {
+                        macroId = tostring(macro.id or macro.macroId or macro.macro_id or ""),
+                        name = sanitizeMacroName(macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"),
+                        body = tostring(macroBody),
+                        source = "profile-list",
+                    }
+                    ensureMacroEntry(seededPayload)
+                end
+            end
+        end
+    end
+
     for barIdx = 1, 5 do
         local bar = bars[barIdx]
         local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
@@ -2651,7 +2736,13 @@ local function buildViewerData(profile)
         end
     end
 
-    return keyToEntries, slotData
+    table.sort(macroEntries, function(a, b)
+        local an = tostring(a and a.name or ""):lower()
+        local bn = tostring(b and b.name or ""):lower()
+        return an < bn
+    end)
+
+    return keyToEntries, slotData, macroEntries
 end
 
 local function setBarViewerCell(cell, key, spellName, icon)
@@ -2766,7 +2857,7 @@ local function refreshViewerFrame(frame)
         tostring(profile.heroTalent or "-")
     ))
 
-    local keyToEntries, slotData = buildViewerData(profile)
+    local keyToEntries, slotData, macroEntries = buildViewerData(profile)
 
     if frame.applyBtn then
         local diagnostics = getProfileMatchDiagnostics(profile)
@@ -2790,6 +2881,23 @@ local function refreshViewerFrame(frame)
             setBarViewerCell(cell, data.key, data.spellName, data.icon)
         end
     end
+
+    if frame.macroMessageFrame then
+        frame.macroMessageFrame:Clear()
+        if type(macroEntries) ~= "table" or #macroEntries == 0 then
+            frame.macroMessageFrame:AddMessage("No macros found in this profile.")
+        else
+            for _, macro in ipairs(macroEntries) do
+                local label = tostring(macro.name or "WoWKeybMacro")
+                local idPart = (macro.macroId and macro.macroId ~= "") and (" [id:" .. tostring(macro.macroId) .. "]") or ""
+                local usagePart = "unused"
+                if type(macro.usages) == "table" and #macro.usages > 0 then
+                    usagePart = table.concat(macro.usages, ", ")
+                end
+                frame.macroMessageFrame:AddMessage(label .. idPart .. " -> " .. usagePart)
+            end
+        end
+    end
 end
 
 local viewerFrame
@@ -2811,7 +2919,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
     if not viewerFrame then
         viewerFrame = CreateFrame("Frame", "WoWKeybViewerFrame", UIParent, "BackdropTemplate")
-        viewerFrame:SetSize(1020, 740)
+        viewerFrame:SetSize(1020, 880)
         viewerFrame:SetPoint("CENTER")
         viewerFrame:SetFrameStrata("DIALOG")
         viewerFrame:SetFrameLevel(120)
@@ -2835,7 +2943,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-        subtitle:SetText("Visual read-only keyboard and action bar mapping")
+        subtitle:SetText("Visual read-only keyboard, action bar, and macro mapping")
 
         local metaText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
@@ -3002,6 +3110,41 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 viewerFrame.barCells[barIdx][slotIdx] = cell
             end
         end
+
+        local macrosTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        macrosTitle:SetPoint("TOPLEFT", barsContainer, "BOTTOMLEFT", 0, -12)
+        macrosTitle:SetText("Macros In Profile")
+
+        local macrosContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
+        macrosContainer:SetPoint("TOPLEFT", macrosTitle, "BOTTOMLEFT", 0, -6)
+        macrosContainer:SetSize(980, 96)
+        if macrosContainer.SetBackdrop then
+            macrosContainer:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = false, edgeSize = 10,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            })
+            macrosContainer:SetBackdropColor(0.05, 0.05, 0.06, 0.9)
+            macrosContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
+        end
+
+        local macroMessageFrame = CreateFrame("ScrollingMessageFrame", nil, macrosContainer)
+        macroMessageFrame:SetPoint("TOPLEFT", 8, -8)
+        macroMessageFrame:SetPoint("BOTTOMRIGHT", -8, 8)
+        macroMessageFrame:SetMaxLines(300)
+        macroMessageFrame:SetFading(false)
+        macroMessageFrame:SetJustifyH("LEFT")
+        macroMessageFrame:SetFontObject("GameFontHighlightSmall")
+        macroMessageFrame:EnableMouseWheel(true)
+        macroMessageFrame:SetScript("OnMouseWheel", function(self, delta)
+            if delta > 0 then
+                self:ScrollUp()
+            else
+                self:ScrollDown()
+            end
+        end)
+        viewerFrame.macroMessageFrame = macroMessageFrame
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(120, 22)
