@@ -2732,15 +2732,40 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(120, 22)
-        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 90, 18)
+        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 140, 18)
         refreshBtn:SetText("Refresh")
         refreshBtn:SetScript("OnClick", function()
             refreshViewerFrame(viewerFrame)
         end)
 
+        local applyBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
+        applyBtn:SetSize(120, 22)
+        applyBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 0, 18)
+        applyBtn:SetText("Apply Profile")
+        applyBtn:SetScript("OnClick", function()
+            local target = viewerFrame and viewerFrame.profileName
+            if not target then
+                print("|cffff0000[WoWKeyb]|r No selected profile to apply.")
+                return
+            end
+            local okApply, resultApply = applySelectionByName(target)
+            if okApply then
+                print("|cff00ff00[WoWKeyb]|r " .. tostring(resultApply))
+            else
+                print("|cffff0000[WoWKeyb]|r Failed to apply profile: " .. tostring(resultApply or "Unknown error"))
+            end
+            if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
+                WoWKeyb.optionsPanel.refreshCurrentProfileText()
+            end
+            if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
+                WoWKeyb.optionsPanel.refreshProfileSelector()
+            end
+            refreshViewerFrame(viewerFrame)
+        end)
+
         local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
-        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -90, 18)
+        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -140, 18)
         closeBtn:SetText("Close")
         closeBtn:SetScript("OnClick", function() viewerFrame:Hide() end)
     end
@@ -2894,7 +2919,6 @@ local function createSettingsPanel()
     profileDropdown:SetPoint("TOPLEFT", profileLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(profileDropdown, 220)
     local applyBtn
-    local pendingApplyProfileName = nil
 
     local profileStatusText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     profileStatusText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
@@ -2922,10 +2946,6 @@ local function createSettingsPanel()
         return diagnostics and diagnostics.matches or false
     end
 
-    local function clearPendingApply()
-        pendingApplyProfileName = nil
-    end
-
     local function refreshApplyButtonState()
         if not applyBtn then return end
         local canApply = selectedProfileCanApply()
@@ -2936,12 +2956,7 @@ local function createSettingsPanel()
                 applyBtn:Disable()
             end
         end
-        local target = selectedProfileName or BLIZZARD_DEFAULT_PROFILE
-        if pendingApplyProfileName and pendingApplyProfileName == target and canApply then
-            applyBtn:SetText("Apply Selected Profile (Confirm)")
-        else
-            applyBtn:SetText("Apply Selected Profile")
-        end
+        applyBtn:SetText("Apply Selected Profile")
     end
 
     local function refreshProfileSelector()
@@ -3048,7 +3063,6 @@ local function createSettingsPanel()
                     selectedProfileName = name
                     UIDropDownMenu_SetText(profileDropdown, name)
                     panel.forceVisibleProfileName = nil
-                    clearPendingApply()
                     refreshApplyButtonState()
                 end
                 UIDropDownMenu_AddButton(info, level)
@@ -3101,22 +3115,12 @@ local function createSettingsPanel()
             print("|cffff0000[WoWKeyb]|r Selected profile does not match current class/spec/hero and cannot be applied.")
             return
         end
-        if pendingApplyProfileName ~= target then
-            if target ~= BLIZZARD_DEFAULT_PROFILE then
-                WoWKeyb:ShowKeybindingViewer(target)
-            end
-            pendingApplyProfileName = target
-            refreshApplyButtonState()
-            print("|cffffcc00[WoWKeyb]|r Review the keybinding map, then press Apply Selected Profile again to confirm.")
-            return
-        end
         local ok, result = applySelectionByName(target)
         if ok then
             print("|cff00ff00[WoWKeyb]|r " .. tostring(result))
         else
             print("|cffff0000[WoWKeyb]|r " .. tostring(result or "Failed to apply"))
         end
-        clearPendingApply()
         refreshCurrentProfileText()
         refreshProfileSelector()
     end)
@@ -3785,10 +3789,9 @@ function WoWKeyb:ShowImportDialog(profileName)
                             end
                             if not StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] then
                                 StaticPopupDialogs["WOWKEYB_IMPORT_APPLY_CONFIRM"] = {
-                                    text = "Apply imported profile \"%s\" now?",
-                                    button1 = "Apply",
-                                    button2 = "Not now",
-                                    button3 = "View map",
+                                    text = "Preview opened for imported profile \"%s\".\nApply this profile now?",
+                                    button1 = "Confirm Apply",
+                                    button2 = "Cancel",
                                     OnAccept = function(_, data)
                                         local okApply, resultApply = applySelectionByName(data)
                                         if okApply then
@@ -3805,11 +3808,6 @@ function WoWKeyb:ShowImportDialog(profileName)
                                         if viewerFrame and viewerFrame:IsShown() then
                                             viewerFrame.profileName = data
                                             refreshViewerFrame(viewerFrame)
-                                        end
-                                    end,
-                                    OnAlt = function(_, data)
-                                        if data and data ~= "" then
-                                            WoWKeyb:ShowKeybindingViewer(data)
                                         end
                                     end,
                                     timeout = 0,
