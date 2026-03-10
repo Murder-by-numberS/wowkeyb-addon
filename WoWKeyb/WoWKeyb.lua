@@ -67,6 +67,9 @@ local function ensureDBDefaults()
     if WoWKeybDB.debugViewerSlots == nil then
         WoWKeybDB.debugViewerSlots = false
     end
+    if WoWKeybDB.debugApplyAssignments == nil then
+        WoWKeybDB.debugApplyAssignments = false
+    end
     if WoWKeybDB.minimap.hide == nil then WoWKeybDB.minimap.hide = false end
     if WoWKeybDB.minimap.minimapPos == nil then
         WoWKeybDB.minimap.minimapPos = tonumber(WoWKeybDB.minimap.angle) or 225
@@ -1893,6 +1896,7 @@ applyProfile = function(profile)
     local skipped = 0
     local macroParseCache = {}
     local debugApplySlots = WoWKeybDB.debugApplySlots == true
+    local debugApplyAssignments = WoWKeybDB.debugApplyAssignments == true
 
     for _, entry in ipairs(entries) do
         local spell = entry.spell
@@ -1939,6 +1943,7 @@ applyProfile = function(profile)
                 local placeResult = "not-attempted"
                 local placeReason = "n/a"
                 local macroResult = "n/a"
+                local isMacroAssignment = macroPayload and true or false
 
                 -- 1. Place spell on action bar (default WoW UI)
                 if macroPayload then
@@ -2024,6 +2029,30 @@ applyProfile = function(profile)
                 else
                     placeResult = "skip"
                     placeReason = slotHasMacro and "macro-contains-spell" or "macro-kept"
+                end
+
+                -- Temporary visibility: print what this slot is receiving during apply.
+                local assignedLabel
+                if isMacroAssignment then
+                    local macroName = tostring(macroPayload and macroPayload.name or "Macro")
+                    local macroId = tostring(macroPayload and macroPayload.macroId or "")
+                    if macroId ~= "" then
+                        assignedLabel = string.format("macro \"%s\" [id:%s]", macroName, macroId)
+                    else
+                        assignedLabel = string.format("macro \"%s\"", macroName)
+                    end
+                else
+                    local resolvedSpellName = tostring(spellName or "")
+                    if resolvedSpellName == "" then
+                        resolvedSpellName = "(unknown spell)"
+                    end
+                    assignedLabel = string.format("spell \"%s\"", resolvedSpellName)
+                end
+                if debugApplyAssignments then
+                    addonChat("|cffffcc00[WoWKeyb]|r [apply] slot=" .. tostring(slot)
+                        .. " blizzSlot=" .. tostring(actionSlot)
+                        .. " key=" .. tostring(wowKey or "-")
+                        .. " assign=" .. assignedLabel)
                 end
 
                 -- 2. Bind key to action bar slot
@@ -2551,6 +2580,42 @@ local function buildViewerData(profile)
         return nil
     end
 
+    local function resolveViewerMacroIcon(spell, macroPayload)
+        if type(macroPayload) ~= "table" then return nil end
+
+        local existingIcon = spell and spell.icon
+        if existingIcon and tostring(existingIcon) ~= "" then
+            local iconStr = tostring(existingIcon)
+            local lowerIcon = iconStr:lower()
+            if not lowerIcon:find("^https?://") then
+                return existingIcon
+            end
+        end
+
+        if type(GetMacroInfo) ~= "function" then
+            return nil
+        end
+
+        local macroIndex
+        local macroBody = tostring(macroPayload.body or "")
+        if macroBody ~= "" then
+            macroIndex = findExistingMacroByBody(macroBody)
+        end
+        if (not macroIndex) and type(GetMacroIndexByName) == "function" then
+            local byName = GetMacroIndexByName(tostring(macroPayload.name or ""))
+            if byName and tonumber(byName) and tonumber(byName) > 0 then
+                macroIndex = tonumber(byName)
+            end
+        end
+        if macroIndex then
+            local _, macroIcon = GetMacroInfo(macroIndex)
+            if macroIcon and tostring(macroIcon) ~= "" then
+                return macroIcon
+            end
+        end
+        return nil
+    end
+
     local function viewerBaseKey(key)
         local k = normalizeKey(key)
         if not k or k == "" then return nil end
@@ -2596,7 +2661,6 @@ local function buildViewerData(profile)
         if kb and kb.spell and (kb.spell.spellId or kb.spell.spell_id or kb.spell.id or kb.spell.name) then
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName or "")
-            local spellIcon = resolveViewerSpellIcon(spell)
             local wowKey = normalizeKey(kb.key or "")
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
             if (not slot) and wowKey and wowKey ~= "" and layoutKeyToSlots[wowKey] then
@@ -2616,6 +2680,7 @@ local function buildViewerData(profile)
                 end
             end
             local macroPayload = extractMacroPayload(spell, macroLookup)
+            local spellIcon = (macroPayload and resolveViewerMacroIcon(spell, macroPayload)) or resolveViewerSpellIcon(spell)
             if macroPayload then
                 local macroEntry = ensureMacroEntry(macroPayload)
                 if macroEntry then
@@ -3135,7 +3200,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         macroMessageFrame:SetMaxLines(300)
         macroMessageFrame:SetFading(false)
         macroMessageFrame:SetJustifyH("LEFT")
-        macroMessageFrame:SetFontObject("GameFontHighlightSmall")
+        macroMessageFrame:SetFontObject(_G.GameFontHighlightSmall)
         macroMessageFrame:EnableMouseWheel(true)
         macroMessageFrame:SetScript("OnMouseWheel", function(self, delta)
             if delta > 0 then
@@ -3770,6 +3835,16 @@ local function createSettingsPanel()
     helpText:SetJustifyH("LEFT")
     helpText:SetText("Tip: Selecting a profile only updates selection. Use Apply Selected Profile to apply a matching profile.")
 
+    local applyLogCheckbox = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    applyLogCheckbox:SetPoint("TOPLEFT", helpText, "BOTTOMLEFT", -2, -10)
+    applyLogCheckbox:SetChecked(WoWKeybDB.debugApplyAssignments == true)
+    if applyLogCheckbox.Text then
+        applyLogCheckbox.Text:SetText("Show per-slot apply chat logs")
+    end
+    applyLogCheckbox:SetScript("OnClick", function(self)
+        WoWKeybDB.debugApplyAssignments = self:GetChecked() and true or false
+    end)
+
     WoWKeyb.optionsPanel = panel
 
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
@@ -3977,6 +4052,19 @@ local function slashHandler(msg)
                 .. ". Use /wowkeyb viewerdebug on|off")
         end
 
+    elseif cmd == "applylog" or cmd == "al" then
+        if arg == "on" then
+            WoWKeybDB.debugApplyAssignments = true
+            print("|cff00ff00[WoWKeyb]|r Apply assignment chat logs enabled.")
+        elseif arg == "off" then
+            WoWKeybDB.debugApplyAssignments = false
+            print("|cff00ff00[WoWKeyb]|r Apply assignment chat logs disabled.")
+        else
+            print("|cff00ff00[WoWKeyb]|r Apply assignment chat logs are "
+                .. tostring(WoWKeybDB.debugApplyAssignments == true and "ON" or "OFF")
+                .. ". Use /wowkeyb applylog on|off")
+        end
+
     elseif cmd == "labels" or cmd == "ids" then
         local labels = buildPlayerLabelCollection()
         print("|cffffcc00[WoWKeyb]|r [labels] class variants: " .. table.concat(labels.class.variants, ", "))
@@ -4079,6 +4167,7 @@ local function slashHandler(msg)
         print("  /wowkeyb preferred    - Show preferred profile mapping by context")
         print("  /wowkeyb debugmatch [name] - Print class/spec/hero match diagnostics")
         print("  /wowkeyb slotdebug on|off - Toggle apply slot debug logs")
+        print("  /wowkeyb applylog on|off - Toggle per-slot apply assignment logs")
         print("  /wowkeyb viewerdebug on|off - Toggle viewer slot debug logs")
         print("  /wowkeyb labels       - Print class/spec/hero ID+label collection")
         print("  /wowkeyb delete <name> - Delete a stored profile")
