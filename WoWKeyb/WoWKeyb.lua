@@ -2504,6 +2504,15 @@ local function refreshViewerFrame(frame)
 
     local keyToEntries, slotData = buildViewerData(profile)
 
+    if frame.applyBtn then
+        local diagnostics = getProfileMatchDiagnostics(profile)
+        if diagnostics and diagnostics.matches then
+            frame.applyBtn:Show()
+        else
+            frame.applyBtn:Hide()
+        end
+    end
+
     for key, cell in pairs(frame.keyboardCells) do
         local entries = keyToEntries[key] or {}
         setKeyboardViewerCell(cell, key, entries)
@@ -2762,6 +2771,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
             end
             refreshViewerFrame(viewerFrame)
         end)
+        viewerFrame.applyBtn = applyBtn
 
         local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
