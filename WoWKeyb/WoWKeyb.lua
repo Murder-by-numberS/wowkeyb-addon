@@ -2085,9 +2085,12 @@ local function buildViewerData(profile)
     local debugViewerSlots = WoWKeybDB.debugViewerSlots == true
     local function resolveViewerSpellIcon(spell)
         if type(spell) ~= "table" then return nil end
+        local function hasIcon(value)
+            return value and tostring(value) ~= ""
+        end
 
         local existingIcon = spell.icon
-        if existingIcon and tostring(existingIcon) ~= "" then
+        if hasIcon(existingIcon) then
             local iconStr = tostring(existingIcon)
             local lowerIcon = iconStr:lower()
             -- WoW textures cannot use web URLs, so ignore those and resolve locally.
@@ -2105,28 +2108,53 @@ local function buildViewerData(profile)
             end
         end
 
+        local spellName = tostring(spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName or "")
+
+        -- Retail API: C_Spell.GetSpellInfo may return a table with iconID/iconFileID.
+        if C_Spell and type(C_Spell.GetSpellInfo) == "function" then
+            local function resolveFromSpellInfo(ref)
+                if not ref or ref == "" then return nil end
+                local okInfo, info = pcall(C_Spell.GetSpellInfo, ref)
+                if not okInfo or not info then return nil end
+                if type(info) == "table" then
+                    local icon = info.iconID or info.iconFileID or info.icon
+                    if hasIcon(icon) then
+                        return icon
+                    end
+                end
+                return nil
+            end
+            local infoIcon = resolveFromSpellInfo(spellId)
+            if hasIcon(infoIcon) then
+                return infoIcon
+            end
+            infoIcon = resolveFromSpellInfo(spellName)
+            if hasIcon(infoIcon) then
+                return infoIcon
+            end
+        end
+
         if spellId and C_Spell and type(C_Spell.GetSpellTexture) == "function" then
             local okTexture, texture = pcall(C_Spell.GetSpellTexture, spellId)
-            if okTexture and texture and tostring(texture) ~= "" then
+            if okTexture and hasIcon(texture) then
                 return texture
             end
         end
         if spellId and _G.GetSpellInfo then
             local _, _, texture = _G.GetSpellInfo(spellId)
-            if texture and tostring(texture) ~= "" then
+            if hasIcon(texture) then
                 return texture
             end
         end
 
-        local spellName = tostring(spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName or "")
         if spellName ~= "" and _G.GetSpellInfo then
             local _, _, texture = _G.GetSpellInfo(spellName)
-            if texture and tostring(texture) ~= "" then
+            if hasIcon(texture) then
                 return texture
             end
         end
 
-        if existingIcon and tostring(existingIcon) ~= "" then
+        if hasIcon(existingIcon) then
             return existingIcon
         end
         return nil
@@ -2299,9 +2327,12 @@ end
 local function setBarViewerCell(cell, key, spellName, icon)
     if not cell then return end
     local cleanKey = (key and key ~= "") and key or "-"
-    cell.keyText:SetText(cleanKey)
-    -- Bars should be icon/key focused; ability names are shown on hover in keyboard.
+    -- Keep slot visuals icon-only; show keybind details on hover tooltip.
+    cell.keyText:SetText("")
     cell.spellText:SetText("")
+    cell.viewerKey = cleanKey
+    cell.viewerSpellName = (spellName and spellName ~= "") and spellName or "-"
+    cell.viewerIcon = icon
     if icon and icon ~= "" then
         cell.icon:SetTexture(icon)
         cell.icon:Show()
@@ -2316,6 +2347,25 @@ local function slotToBarSlotLabel(slot)
     local bar = math.floor((slot - 1) / 12) + 1
     local idx = ((slot - 1) % 12) + 1
     return string.format("Bar %d Slot %d", bar, idx)
+end
+
+local function showBarCellTooltip(cell)
+    if not cell then return end
+    local slot = cell.viewerSlot
+    local keyLabel = tostring(cell.viewerKey or "-")
+    local spellLabel = tostring(cell.viewerSpellName or "-")
+    local icon = cell.viewerIcon
+
+    GameTooltip:SetOwner(cell, "ANCHOR_RIGHT")
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine(slotToBarSlotLabel(slot), 1, 1, 1)
+    if icon and icon ~= "" then
+        GameTooltip:AddLine(string.format("|T%s:14|t %s", tostring(icon), spellLabel), 0.95, 0.95, 0.95)
+    else
+        GameTooltip:AddLine(spellLabel, 0.95, 0.95, 0.95)
+    end
+    GameTooltip:AddLine("Bind: " .. keyLabel, 0.8, 0.8, 0.8)
+    GameTooltip:Show()
 end
 
 local function showKeyboardCellTooltip(cell)
@@ -2582,13 +2632,33 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
                 cell.keyText = cell:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
                 cell.keyText:SetPoint("TOPLEFT", 2, -2)
-                cell.keyText:SetText("-")
+                cell.keyText:SetText("")
 
                 cell.spellText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
                 cell.spellText:SetPoint("BOTTOMLEFT", 2, 2)
                 cell.spellText:SetPoint("BOTTOMRIGHT", -2, 2)
                 cell.spellText:SetJustifyH("LEFT")
-                cell.spellText:SetText("-")
+                cell.spellText:SetText("")
+                cell.viewerSlot = ((barIdx - 1) * 12) + slotIdx
+
+                cell:SetScript("OnEnter", function(self)
+                    if self.SetBackdropColor then
+                        self:SetBackdropColor(0.18, 0.18, 0.22, 0.98)
+                    end
+                    if self.SetBackdropBorderColor then
+                        self:SetBackdropBorderColor(0.6, 0.6, 0.75, 1)
+                    end
+                    showBarCellTooltip(self)
+                end)
+                cell:SetScript("OnLeave", function(self)
+                    if self.SetBackdropColor then
+                        self:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
+                    end
+                    if self.SetBackdropBorderColor then
+                        self:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
+                    end
+                    GameTooltip:Hide()
+                end)
 
                 viewerFrame.barCells[barIdx][slotIdx] = cell
             end
