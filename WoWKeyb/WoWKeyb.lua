@@ -1150,22 +1150,34 @@ local function actionSlotMacroContainsSpell(actionSlot, spellId, spellName, pars
         return false
     end
 
+    local targetId = tonumber(spellId)
+    local targetName = normalizeSpellText(spellName)
+    local resolvedTargetName = nil
+    if targetId and _G.GetSpellInfo then
+        resolvedTargetName = _G.GetSpellInfo(targetId)
+        resolvedTargetName = normalizeSpellText(resolvedTargetName)
+    end
+
     -- Prefer native WoW macro spell resolution when available.
     if type(GetMacroSpell) == "function" then
-        local macroSpellId, macroSpellName = GetMacroSpell(actionId)
-        local targetId = tonumber(spellId)
-        if targetId and macroSpellId and tonumber(macroSpellId) == targetId then
-            return true
-        end
-        local targetName = normalizeSpellText(spellName)
-        if targetName ~= "" and macroSpellName and normalizeSpellText(macroSpellName) == targetName then
-            return true
-        end
-        if targetId and macroSpellName and _G.GetSpellInfo then
-            local resolvedTargetName = _G.GetSpellInfo(targetId)
-            if resolvedTargetName and normalizeSpellText(resolvedTargetName) == normalizeSpellText(macroSpellName) then
+        local macroSpellA, macroSpellB = GetMacroSpell(actionId)
+        local function matchesMacroSpellValue(value)
+            if value == nil then return false end
+            local valueNum = tonumber(value)
+            if targetId and valueNum and valueNum == targetId then
                 return true
             end
+            local normalizedValue = normalizeSpellText(value)
+            if targetName ~= "" and normalizedValue == targetName then
+                return true
+            end
+            if resolvedTargetName and resolvedTargetName ~= "" and normalizedValue == resolvedTargetName then
+                return true
+            end
+            return false
+        end
+        if matchesMacroSpellValue(macroSpellA) or matchesMacroSpellValue(macroSpellB) then
+            return true
         end
     end
 
@@ -1176,19 +1188,27 @@ local function actionSlotMacroContainsSpell(actionSlot, spellId, spellName, pars
     local parsed = parseCache[cacheKey]
     if not parsed then return false end
 
-    local targetId = tonumber(spellId)
     if targetId and parsed.spellIds[targetId] then
         return true
     end
 
-    local targetName = normalizeSpellText(spellName)
     if targetName ~= "" and parsed.spellNames[targetName] then
         return true
     end
-    if targetId and _G.GetSpellInfo then
-        local resolvedTargetName = _G.GetSpellInfo(targetId)
-        local normalizedResolved = normalizeSpellText(resolvedTargetName)
-        if normalizedResolved ~= "" and parsed.spellNames[normalizedResolved] then
+    if resolvedTargetName and resolvedTargetName ~= "" and parsed.spellNames[resolvedTargetName] then
+        return true
+    end
+
+    -- Heuristic fallback for conditional mouseover macros where parser can miss variants.
+    local normalizedBody = normalizeSpellText(body)
+    if normalizedBody ~= "" then
+        if targetId and normalizedBody:find("spell:" .. tostring(targetId), 1, true) then
+            return true
+        end
+        if targetName ~= "" and normalizedBody:find(targetName, 1, true) then
+            return true
+        end
+        if resolvedTargetName and resolvedTargetName ~= "" and normalizedBody:find(resolvedTargetName, 1, true) then
             return true
         end
     end
