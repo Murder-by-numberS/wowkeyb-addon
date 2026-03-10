@@ -859,11 +859,40 @@ local function buildLayoutBarIndexById(profile)
         for idx, bar in ipairs(profile.layout.bars) do
             local barId = bar and (bar.id or bar.bar_id)
             if barId then
-                byId[barId] = idx - 1 -- zero-based bar index to match slot math
+                local mappedIdx = idx - 1 -- zero-based bar index to match slot math
+                byId[barId] = mappedIdx
+                byId[tostring(barId)] = mappedIdx
+                local numericBarId = tonumber(barId)
+                if numericBarId ~= nil then
+                    byId[numericBarId] = mappedIdx
+                end
             end
         end
     end
     return byId
+end
+
+local function getLayoutBarIndex(layoutBarIndexById, barId)
+    if not layoutBarIndexById or barId == nil then
+        return nil
+    end
+
+    local direct = layoutBarIndexById[barId]
+    if direct ~= nil then return direct end
+
+    local asString = tostring(barId)
+    if asString ~= "" then
+        local byString = layoutBarIndexById[asString]
+        if byString ~= nil then return byString end
+    end
+
+    local asNumber = tonumber(barId)
+    if asNumber ~= nil then
+        local byNumber = layoutBarIndexById[asNumber]
+        if byNumber ~= nil then return byNumber end
+    end
+
+    return nil
 end
 
 local function resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
@@ -872,7 +901,7 @@ local function resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
         return nil
     end
 
-    local barIdx = layoutBarIndexById[keybindBarId]
+    local barIdx = getLayoutBarIndex(layoutBarIndexById, keybindBarId)
     local rawSlotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
     if barIdx == nil or not rawSlotIdx then
         return nil
@@ -907,7 +936,7 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     -- 1) Explicit barId + slotIndex from web app
     local keybindBarId = keybind and (keybind.barId or keybind.bar_id) or nil
     if keybind and keybindBarId and (keybind.slotIndex or keybind.slot_index) ~= nil then
-        local barIdx = layoutBarIndexById[keybindBarId]
+        local barIdx = getLayoutBarIndex(layoutBarIndexById, keybindBarId)
         local rawSlotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
         if barIdx ~= nil and rawSlotIdx then
             local candidates = {}
