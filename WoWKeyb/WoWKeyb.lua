@@ -53,6 +53,12 @@ local function ensureDBDefaults()
     if type(WoWKeybDB.preferredProfileByContext) ~= "table" then
         WoWKeybDB.preferredProfileByContext = {}
     end
+    if WoWKeybDB.debugApplySlots == nil then
+        WoWKeybDB.debugApplySlots = false
+    end
+    if WoWKeybDB.debugViewerSlots == nil then
+        WoWKeybDB.debugViewerSlots = false
+    end
     if WoWKeybDB.minimap.hide == nil then WoWKeybDB.minimap.hide = false end
     if WoWKeybDB.minimap.minimapPos == nil then
         WoWKeybDB.minimap.minimapPos = tonumber(WoWKeybDB.minimap.angle) or 225
@@ -1567,13 +1573,20 @@ applyProfile = function(profile)
     local applied = 0
     local skipped = 0
     local macroParseCache = {}
+    local debugApplySlots = WoWKeybDB.debugApplySlots == true
 
     for _, entry in ipairs(entries) do
         local spell = entry.spell
         local slot = entry.slot
         local wowKey = entry.wowKey
+        local debugSpellId = tostring(spell and (spell.spellId or spell.spell_id or spell.id) or "")
+        local debugSpellName = tostring(spell and spell.name or "")
         if not slot then
             skipped = skipped + 1
+            if debugApplySlots then
+                print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=<none> key=" .. tostring(wowKey or "")
+                    .. " spellId=" .. debugSpellId .. " spell=\"" .. debugSpellName .. "\" result=skip reason=no-slot")
+            end
         else
             local spellId = tonumber(spell.spellId or spell.spell_id or spell.id)
             if not spellId then
@@ -1592,6 +1605,13 @@ applyProfile = function(profile)
 
             if (not spellId and not spellName) or spellName == "" then
                 skipped = skipped + 1
+                if debugApplySlots then
+                    print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                        .. " blizzSlot=" .. tostring(toBlizzardActionSlot(slot))
+                        .. " key=" .. tostring(wowKey or "")
+                        .. " spellId=" .. tostring(spellId or "")
+                        .. " spell=\"" .. tostring(spellName or "") .. "\" result=skip reason=missing-spell")
+                end
             else
                 local actionSlot = toBlizzardActionSlot(slot)
                 local keepMacro = actionSlotMacroContainsSpell(actionSlot, spellId, spellName, macroParseCache)
@@ -1600,6 +1620,8 @@ applyProfile = function(profile)
                 if slotHasMacro then
                     keepMacro = true
                 end
+                local placeResult = "not-attempted"
+                local placeReason = "n/a"
 
                 -- 1. Place spell on action bar (default WoW UI)
                 if not keepMacro then
@@ -1629,11 +1651,21 @@ applyProfile = function(profile)
                     if pickedUp then
                         PlaceAction(actionSlot)
                         ClearCursor()
+                        placeResult = "placed"
+                        placeReason = "pickup-success"
+                    else
+                        placeResult = "skip"
+                        placeReason = "pickup-failed"
                     end
+                else
+                    placeResult = "skip"
+                    placeReason = slotHasMacro and "macro-preserved" or "macro-kept"
                 end
 
                 -- 2. Bind key to action bar slot
                 local command = SLOT_COMMANDS[slot]
+                local bindResult = "skip"
+                local bindReason = "missing-command"
                 if command then
                     local bindingKey
                     if hasLayout then
@@ -1646,12 +1678,34 @@ applyProfile = function(profile)
 
                     if bindingKey and bindingKey ~= "" then
                         local ok = SetBinding(bindingKey, command)
-                        if ok then applied = applied + 1 else skipped = skipped + 1 end
+                        if ok then
+                            applied = applied + 1
+                            bindResult = "bound"
+                            bindReason = "ok"
+                        else
+                            skipped = skipped + 1
+                            bindResult = "skip"
+                            bindReason = "setbinding-failed"
+                        end
                     else
                         skipped = skipped + 1
+                        bindResult = "skip"
+                        bindReason = "empty-binding-key"
                     end
                 else
                     skipped = skipped + 1
+                    bindResult = "skip"
+                    bindReason = "missing-command"
+                end
+
+                if debugApplySlots then
+                    print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                        .. " blizzSlot=" .. tostring(actionSlot)
+                        .. " key=" .. tostring(wowKey or "")
+                        .. " spellId=" .. tostring(spellId or "")
+                        .. " spell=\"" .. tostring(spellName or "") .. "\""
+                        .. " place=" .. tostring(placeResult) .. "(" .. tostring(placeReason) .. ")"
+                        .. " bind=" .. tostring(bindResult) .. "(" .. tostring(bindReason) .. ")")
                 end
             end
         end
@@ -1992,6 +2046,7 @@ local function buildViewerData(profile)
     local slotData = {}
     local keybinds = profile and profile.keybinds or {}
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
+    local debugViewerSlots = WoWKeybDB.debugViewerSlots == true
     local function resolveViewerSpellIcon(spell)
         if type(spell) ~= "table" then return nil end
 
@@ -2005,9 +2060,9 @@ local function buildViewerData(profile)
             end
         end
 
-        local spellId = tonumber(spell.spellId or spell.spell_id)
+        local spellId = tonumber(spell.spellId or spell.spell_id or spell.id)
         if not spellId then
-            local rawSpellId = tostring(spell.spellId or spell.spell_id or "")
+            local rawSpellId = tostring(spell.spellId or spell.spell_id or spell.id or "")
             local numericOnly = rawSpellId:gsub("[^0-9]", "")
             if numericOnly ~= "" then
                 spellId = tonumber(numericOnly)
@@ -2062,25 +2117,90 @@ local function buildViewerData(profile)
         return k
     end
 
+    local bars = profile and profile.layout and profile.layout.bars or {}
+    local layoutKeyToSlots = {}
+    for barIdx = 1, 5 do
+        local bar = bars[barIdx]
+        local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
+            or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
+            or {}
+        for slotIdx = 1, 12 do
+            local normalizedLayoutKey = normalizeKey(slotKeys[slotIdx] or "")
+            if normalizedLayoutKey and normalizedLayoutKey ~= "" then
+                local globalSlot = ((barIdx - 1) * 12) + slotIdx
+                layoutKeyToSlots[normalizedLayoutKey] = layoutKeyToSlots[normalizedLayoutKey] or {}
+                table.insert(layoutKeyToSlots[normalizedLayoutKey], globalSlot)
+            end
+        end
+    end
+    for _, slots in pairs(layoutKeyToSlots) do
+        table.sort(slots)
+    end
+
     for _, kb in ipairs(keybinds) do
-        if kb and kb.spell and (kb.spell.spellId or kb.spell.spell_id or kb.spell.name) then
+        if kb and kb.spell and (kb.spell.spellId or kb.spell.spell_id or kb.spell.id or kb.spell.name) then
             local spell = kb.spell or {}
             local spellName = tostring(spell.name or "")
             local spellIcon = resolveViewerSpellIcon(spell)
             local wowKey = normalizeKey(kb.key or "")
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
+            if (not slot) and wowKey and wowKey ~= "" and layoutKeyToSlots[wowKey] then
+                for _, candidate in ipairs(layoutKeyToSlots[wowKey]) do
+                    if not slotData[candidate] then
+                        slot = candidate
+                        break
+                    end
+                end
+            end
+            if (not slot) and ((kb.barId or kb.bar_id) and (kb.slotIndex or kb.slot_index) ~= nil) then
+                if (not wowKey) or wowKey == "" or not layoutKeyToSlots[wowKey] then
+                    local explicitSlot = resolveExplicitSlotCandidate(kb, layoutBarIndexById)
+                    if explicitSlot and not slotData[explicitSlot] then
+                        slot = explicitSlot
+                    end
+                end
+            end
 
             if slot then
+                if spellName == "" and _G.GetSpellInfo then
+                    local parsedId = tonumber(spell.spellId or spell.spell_id or spell.id)
+                    if not parsedId then
+                        local rawSpellId = tostring(spell.spellId or spell.spell_id or spell.id or "")
+                        local numericOnly = rawSpellId:gsub("[^0-9]", "")
+                        if numericOnly ~= "" then
+                            parsedId = tonumber(numericOnly)
+                        end
+                    end
+                    if parsedId then
+                        local maybeName = _G.GetSpellInfo(parsedId)
+                        if maybeName and maybeName ~= "" then
+                            spellName = tostring(maybeName)
+                        end
+                    end
+                end
                 slotData[slot] = slotData[slot] or {
                     key = tostring(kb.key or ""),
                     spellName = spellName ~= "" and spellName or "(no spell)",
                     icon = spellIcon,
                 }
+                if debugViewerSlots then
+                    print("|cffffcc00[WoWKeyb]|r [viewer-debug] slot=" .. tostring(slot)
+                        .. " key=" .. tostring(kb.key or "")
+                        .. " normalized=" .. tostring(wowKey or "")
+                        .. " spellId=" .. tostring(spell.spellId or spell.spell_id or spell.id or "")
+                        .. " spell=\"" .. tostring(spellName ~= "" and spellName or "(no spell)") .. "\""
+                        .. " icon=" .. tostring(spellIcon and "yes" or "no"))
+                end
+            elseif debugViewerSlots then
+                print("|cffffcc00[WoWKeyb]|r [viewer-debug] slot=<none>"
+                    .. " key=" .. tostring(kb.key or "")
+                    .. " normalized=" .. tostring(wowKey or "")
+                    .. " spellId=" .. tostring(spell.spellId or spell.spell_id or spell.id or "")
+                    .. " spell=\"" .. tostring(spellName or "") .. "\" reason=no-resolved-slot")
             end
         end
     end
 
-    local bars = profile and profile.layout and profile.layout.bars or {}
     for barIdx = 1, 5 do
         local bar = bars[barIdx]
         local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
@@ -3159,6 +3279,30 @@ local function slashHandler(msg)
             .. " class_ok=" .. tostring(classOk)
             .. " spec_hero_ok=" .. tostring(specHeroOk))
 
+    elseif cmd == "slotdebug" or cmd == "sd" then
+        if arg == "on" then
+            WoWKeybDB.debugApplySlots = true
+            print("|cff00ff00[WoWKeyb]|r Slot apply debug enabled.")
+        elseif arg == "off" then
+            WoWKeybDB.debugApplySlots = false
+            print("|cff00ff00[WoWKeyb]|r Slot apply debug disabled.")
+        else
+            print("|cff00ff00[WoWKeyb]|r Slot apply debug is " .. tostring(WoWKeybDB.debugApplySlots == true and "ON" or "OFF")
+                .. ". Use /wowkeyb slotdebug on|off")
+        end
+
+    elseif cmd == "viewerdebug" or cmd == "vd" then
+        if arg == "on" then
+            WoWKeybDB.debugViewerSlots = true
+            print("|cff00ff00[WoWKeyb]|r Viewer slot debug enabled.")
+        elseif arg == "off" then
+            WoWKeybDB.debugViewerSlots = false
+            print("|cff00ff00[WoWKeyb]|r Viewer slot debug disabled.")
+        else
+            print("|cff00ff00[WoWKeyb]|r Viewer slot debug is " .. tostring(WoWKeybDB.debugViewerSlots == true and "ON" or "OFF")
+                .. ". Use /wowkeyb viewerdebug on|off")
+        end
+
     elseif cmd == "labels" or cmd == "ids" then
         local labels = buildPlayerLabelCollection()
         print("|cffffcc00[WoWKeyb]|r [labels] class variants: " .. table.concat(labels.class.variants, ", "))
@@ -3260,6 +3404,8 @@ local function slashHandler(msg)
         print("  /wowkeyb contexts     - List profile class/spec/hero contexts")
         print("  /wowkeyb preferred    - Show preferred profile mapping by context")
         print("  /wowkeyb debugmatch [name] - Print class/spec/hero match diagnostics")
+        print("  /wowkeyb slotdebug on|off - Toggle apply slot debug logs")
+        print("  /wowkeyb viewerdebug on|off - Toggle viewer slot debug logs")
         print("  /wowkeyb labels       - Print class/spec/hero ID+label collection")
         print("  /wowkeyb delete <name> - Delete a stored profile")
         print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
