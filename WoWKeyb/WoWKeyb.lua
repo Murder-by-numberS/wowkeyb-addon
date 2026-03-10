@@ -119,7 +119,10 @@ local function normalizeKey(key)
     normalized = normalized:gsub("%-+", "-")
     normalized = normalized:gsub("^%-", "")
     normalized = normalized:gsub("%-$", "")
+    normalized = normalized:gsub("SHFIT%-", "SHIFT-")
+    normalized = normalized:gsub("SHFT%-", "SHIFT-")
     normalized = normalized:gsub("CONTROL%-", "CTRL-")
+    normalized = normalized:gsub("CNTRL%-", "CTRL-")
     -- Expand shorthand modifier aliases often seen in compact displays:
     -- S+5 -> SHIFT-5, C+S+5 -> CTRL-SHIFT-5, A+1 -> ALT-1
     local parts = {}
@@ -849,6 +852,41 @@ local function buildLayoutBarIndexById(profile)
     return byId
 end
 
+local function resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
+    local keybindBarId = keybind and (keybind.barId or keybind.bar_id) or nil
+    if not keybind or not keybindBarId or (keybind.slotIndex or keybind.slot_index) == nil then
+        return nil
+    end
+
+    local barIdx = layoutBarIndexById[keybindBarId]
+    local rawSlotIdx = tonumber(keybind.slotIndex or keybind.slot_index)
+    if barIdx == nil or not rawSlotIdx then
+        return nil
+    end
+
+    local candidates = {}
+    local seen = {}
+    local function addCandidate(idx)
+        if idx and idx >= 0 and idx <= 11 and not seen[idx] then
+            candidates[#candidates + 1] = idx
+            seen[idx] = true
+        end
+    end
+
+    -- Support both legacy zero-based (0-11) and one-based (1-12) slot indexing.
+    addCandidate(rawSlotIdx)
+    addCandidate(rawSlotIdx - 1)
+
+    for _, candidate in ipairs(candidates) do
+        local slot = (barIdx * 12) + candidate + 1
+        if slot >= 1 and slot <= 60 then
+            return slot
+        end
+    end
+
+    return nil
+end
+
 local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
     local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
 
@@ -892,10 +930,7 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
                 end
 
                 -- Fall back to first valid candidate.
-                local slot = (barIdx * 12) + candidates[1] + 1
-                if slot >= 1 and slot <= 60 then
-                    return slot
-                end
+                return resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
             end
         end
     end
@@ -1049,6 +1084,12 @@ local function actionSlotMacroContainsSpell(actionSlot, spellId, spellName, pars
     end
 
     return false
+end
+
+local function actionSlotHasMacro(actionSlot)
+    if not actionSlot then return false end
+    local actionType = GetActionInfo(actionSlot)
+    return actionType == "macro"
 end
 
 local function syncProfileSpellsFromActionBars(profileName)
@@ -1420,6 +1461,16 @@ applyProfile = function(profile)
                         end
                     end
                 end
+                if (not slot) and keybindHasExplicitSlot then
+                    -- If key text is stale/malformed, still allow explicit bar/slot metadata.
+                    -- Only do this when key-based lookup produced no candidates.
+                    if (not nk) or nk == "" or not layoutKeyToSlots[nk] then
+                        local explicitSlot = resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
+                        if explicitSlot and not slotToData[explicitSlot] then
+                            slot = explicitSlot
+                        end
+                    end
+                end
                 if slot then
                     local existing = slotToData[slot]
                     if not existing then
@@ -1471,9 +1522,11 @@ applyProfile = function(profile)
             for slot = 1, 60 do
                 if not slotToData[slot] then
                     local actionSlot = toBlizzardActionSlot(slot)
-                    pcall(function()
-                        ClearAction(actionSlot)
-                    end)
+                    if not actionSlotHasMacro(actionSlot) then
+                        pcall(function()
+                            ClearAction(actionSlot)
+                        end)
+                    end
                 end
             end
         end
@@ -1542,6 +1595,11 @@ applyProfile = function(profile)
             else
                 local actionSlot = toBlizzardActionSlot(slot)
                 local keepMacro = actionSlotMacroContainsSpell(actionSlot, spellId, spellName, macroParseCache)
+                local slotHasMacro = actionSlotHasMacro(actionSlot)
+                -- Preserve user macros by default; do not replace macro actions.
+                if slotHasMacro then
+                    keepMacro = true
+                end
 
                 -- 1. Place spell on action bar (default WoW UI)
                 if not keepMacro then
@@ -2733,10 +2791,123 @@ local function createSettingsPanel()
         WoWKeyb:ShowKeybindingViewer(target)
     end)
 
+    local renameBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    renameBtn:SetSize(180, 24)
+    renameBtn:SetPoint("TOPLEFT", viewerBtn, "BOTTOMLEFT", 0, -8)
+    renameBtn:SetText("Rename Selected Profile")
+
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", viewerBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Selected Profile")
+
+    local function renameProfileByName(oldName, newName)
+        local sourceName = tostring(oldName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        local targetName = tostring(newName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if sourceName == "" then
+            print("|cffff0000[WoWKeyb]|r No selected profile.")
+            return
+        end
+        if sourceName == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be renamed.")
+            return
+        end
+        if not WoWKeybDB.profiles[sourceName] then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. sourceName)
+            return
+        end
+        if targetName == "" then
+            print("|cffff0000[WoWKeyb]|r New profile name cannot be empty.")
+            return
+        end
+        if targetName == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r That name is reserved.")
+            return
+        end
+        if targetName ~= sourceName and WoWKeybDB.profiles[targetName] then
+            print("|cffff0000[WoWKeyb]|r A profile with that name already exists.")
+            return
+        end
+        if targetName == sourceName then
+            return
+        end
+
+        local profile = WoWKeybDB.profiles[sourceName]
+        profile.name = targetName
+        WoWKeybDB.profiles[targetName] = profile
+        WoWKeybDB.profiles[sourceName] = nil
+
+        if WoWKeybDB.currentProfile == sourceName then
+            WoWKeybDB.currentProfile = targetName
+        end
+        if WoWKeybDB.previousProfile == sourceName then
+            WoWKeybDB.previousProfile = targetName
+        end
+        if panel.forceVisibleProfileName == sourceName then
+            panel.forceVisibleProfileName = targetName
+        end
+        for contextKey, preferredName in pairs(WoWKeybDB.preferredProfileByContext or {}) do
+            if preferredName == sourceName then
+                WoWKeybDB.preferredProfileByContext[contextKey] = targetName
+            end
+        end
+
+        selectedProfileName = targetName
+        print("|cff00ff00[WoWKeyb]|r Renamed profile: " .. sourceName .. " -> " .. targetName)
+        refreshProfileSelector()
+        refreshCurrentProfileText()
+    end
+
+    if not StaticPopupDialogs["WOWKEYB_RENAME_PROFILE"] then
+        StaticPopupDialogs["WOWKEYB_RENAME_PROFILE"] = {
+            text = "Rename selected WoWKeyb profile \"%s\"",
+            button1 = "Rename",
+            button2 = "Cancel",
+            hasEditBox = true,
+            maxLetters = 100,
+            OnShow = function(self, data)
+                local editBox = self.editBox
+                if not editBox then return end
+                editBox:SetAutoFocus(true)
+                editBox:SetText((data and data.oldName) or "")
+                editBox:HighlightText()
+            end,
+            OnAccept = function(self, data)
+                local editBox = self and self.editBox
+                local newName = editBox and editBox:GetText() or ""
+                local oldName = data and data.oldName or nil
+                renameProfileByName(oldName, newName)
+            end,
+            EditBoxOnEnterPressed = function(self)
+                local parent = self:GetParent()
+                if parent then
+                    local data = parent.data
+                    local oldName = data and data.oldName or nil
+                    local newName = self:GetText() or ""
+                    renameProfileByName(oldName, newName)
+                    parent:Hide()
+                end
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+
+    renameBtn:SetScript("OnClick", function()
+        local target = selectedProfileName
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile.")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be renamed.")
+            return
+        end
+        StaticPopup_Show("WOWKEYB_RENAME_PROFILE", target, nil, { oldName = target })
+    end)
+
     local function deleteProfileByName(target)
         if not target then
             print("|cffff0000[WoWKeyb]|r No selected profile.")
