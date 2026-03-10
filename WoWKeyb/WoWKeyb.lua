@@ -1634,18 +1634,38 @@ applyProfile = function(profile)
 
                     local pickedUp = false
                     if spellId and type(PickupSpell) == "function" then
+                        if debugApplySlots then
+                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                                .. " blizzSlot=" .. tostring(actionSlot)
+                                .. " try=pickup-by-id spellId=" .. tostring(spellId))
+                        end
                         pcall(function()
                             PickupSpell(spellId)
                         end)
-                        pickedUp = GetCursorInfo() ~= nil
+                        local cursorType = GetCursorInfo()
+                        pickedUp = cursorType ~= nil
+                        if debugApplySlots then
+                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                                .. " blizzSlot=" .. tostring(actionSlot)
+                                .. " try=pickup-by-id result=" .. tostring(pickedUp and "ok" or "fail")
+                                .. " cursorType=" .. tostring(cursorType))
+                        end
                     end
                     if (not pickedUp) and spellName and spellName ~= "" and type(PickupSpell) == "function" then
-                        if spellId then
-                            PickupSpell(spellName)
-                        else
-                            PickupSpell(spellName)
+                        if debugApplySlots then
+                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                                .. " blizzSlot=" .. tostring(actionSlot)
+                                .. " try=pickup-by-name spell=\"" .. tostring(spellName) .. "\"")
                         end
-                        pickedUp = GetCursorInfo() ~= nil
+                        PickupSpell(spellName)
+                        local cursorType = GetCursorInfo()
+                        pickedUp = cursorType ~= nil
+                        if debugApplySlots then
+                            print("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                                .. " blizzSlot=" .. tostring(actionSlot)
+                                .. " try=pickup-by-name result=" .. tostring(pickedUp and "ok" or "fail")
+                                .. " cursorType=" .. tostring(cursorType))
+                        end
                     end
 
                     if pickedUp then
