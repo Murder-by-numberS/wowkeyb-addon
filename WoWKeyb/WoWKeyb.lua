@@ -1063,6 +1063,37 @@ local function readSpellFromActionSlot(slot)
     }
 end
 
+local function readMacroFromActionSlot(slot)
+    if not slot or slot < 1 or slot > 120 then
+        return nil
+    end
+
+    local actionType, actionId = GetActionInfo(slot)
+    if actionType ~= "macro" or not actionId then
+        return nil
+    end
+    if type(GetMacroInfo) ~= "function" then
+        return nil
+    end
+
+    local macroName, macroIcon, macroBody = GetMacroInfo(actionId)
+    local macroId = tostring(actionId or "")
+    local macroText = tostring(macroBody or "")
+    if macroText == "" then
+        return nil
+    end
+
+    return {
+        spellId = "macro:" .. macroId,
+        name = tostring(macroName or "WoWKeybMacro"),
+        icon = macroIcon or "",
+        actionType = "macro",
+        isMacro = true,
+        macroId = macroId,
+        macroText = macroText,
+    }
+end
+
 local function normalizeSpellText(value)
     local s = tostring(value or ""):lower()
     s = s:gsub("^%s+", ""):gsub("%s+$", "")
@@ -1438,19 +1469,58 @@ local function syncProfileSpellsFromActionBars(profileName)
             local slot = resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
             if slot then
                 local currentSpell = keybind.spell or {}
-                local barSpell = readSpellFromActionSlot(toBlizzardActionSlot(slot))
-                if barSpell then
-                    local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
-                    local prevName = tostring(currentSpell.name or "")
-                    local prevIcon = tostring(currentSpell.icon or "")
-                    if prevId ~= barSpell.spellId or prevName ~= barSpell.name or prevIcon ~= barSpell.icon then
-                        keybind.spell = {
-                            spellId = barSpell.spellId,
-                            name = barSpell.name,
-                            icon = barSpell.icon,
-                            description = currentSpell.description or "",
-                        }
-                        changed = changed + 1
+                local actionSlot = toBlizzardActionSlot(slot)
+                local actionType = GetActionInfo(actionSlot)
+                local currentIsMacro = currentSpell.isMacro == true
+                    or tostring(currentSpell.actionType or currentSpell.action_type or ""):lower() == "macro"
+                    or tostring(currentSpell.spellId or currentSpell.spell_id or ""):lower():find("^macro:") ~= nil
+
+                if actionType == "macro" then
+                    local barMacro = readMacroFromActionSlot(actionSlot)
+                    if barMacro then
+                        local prevSpellId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
+                        local prevMacroId = tostring(currentSpell.macroId or currentSpell.macro_id or prevSpellId:match("^macro:(.+)$") or "")
+                        local prevMacroText = tostring(currentSpell.macroText or currentSpell.macro_text or currentSpell.text or currentSpell.body or "")
+                        local prevName = tostring(currentSpell.name or currentSpell.macroName or currentSpell.macro_name or "")
+                        local prevIcon = tostring(currentSpell.icon or "")
+                        if (not currentIsMacro)
+                            or prevMacroId ~= tostring(barMacro.macroId or "")
+                            or prevMacroText ~= tostring(barMacro.macroText or "")
+                            or prevName ~= tostring(barMacro.name or "")
+                            or prevIcon ~= tostring(barMacro.icon or "") then
+                            keybind.spell = {
+                                spellId = barMacro.spellId,
+                                name = barMacro.name,
+                                icon = barMacro.icon,
+                                description = currentSpell.description or "",
+                                actionType = "macro",
+                                isMacro = true,
+                                macroId = barMacro.macroId,
+                                macroText = barMacro.macroText,
+                                sourceSpellId = currentSpell.sourceSpellId or currentSpell.source_spell_id or "",
+                                sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
+                            }
+                            changed = changed + 1
+                        end
+                    end
+                else
+                    -- Preserve existing macro payloads unless the slot is no longer a macro.
+                    if not currentIsMacro then
+                        local barSpell = readSpellFromActionSlot(actionSlot)
+                        if barSpell then
+                            local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
+                            local prevName = tostring(currentSpell.name or "")
+                            local prevIcon = tostring(currentSpell.icon or "")
+                            if prevId ~= barSpell.spellId or prevName ~= barSpell.name or prevIcon ~= barSpell.icon then
+                                keybind.spell = {
+                                    spellId = barSpell.spellId,
+                                    name = barSpell.name,
+                                    icon = barSpell.icon,
+                                    description = currentSpell.description or "",
+                                }
+                                changed = changed + 1
+                            end
+                        end
                     end
                 end
             end
