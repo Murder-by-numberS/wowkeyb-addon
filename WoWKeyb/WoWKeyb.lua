@@ -1259,9 +1259,18 @@ end
 local function normalizeMacroBodyForMatch(body)
     if not body then return "" end
     local normalized = tostring(body):gsub("\r\n", "\n"):gsub("\r", "\n")
-    normalized = normalized:gsub("%s+$", "")
-    normalized = normalized:gsub("^%s+", "")
-    return normalized
+    local lines = {}
+    for line in normalized:gmatch("[^\n]*") do
+        if line == "" and #lines == 0 then
+            -- Skip leading empty lines.
+        else
+            local trimmed = tostring(line):gsub("^%s+", ""):gsub("%s+$", "")
+            if trimmed ~= "" then
+                lines[#lines + 1] = trimmed
+            end
+        end
+    end
+    return table.concat(lines, "\n")
 end
 
 local function sanitizeMacroName(rawName)
