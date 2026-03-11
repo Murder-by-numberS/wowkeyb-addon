@@ -1337,6 +1337,13 @@ local function extractMacroPayload(spell, macroLookup)
     end
 
     local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
+    if (not macroText or tostring(macroText):trim() == "") then
+        -- Legacy/partial payload fallback: some exports only carried macro text in description.
+        local desc = spell.description
+        if desc and tostring(desc):trim() ~= "" then
+            macroText = desc
+        end
+    end
     local macroName = spell.name or spell.macroName or spell.macro_name or "WoWKeybMacro"
     local payloadSource = "spell"
 
