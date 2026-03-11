@@ -1949,6 +1949,15 @@ applyProfile = function(profile)
                 if macroPayload then
                     local macroIndex, ensureReason = ensureMacroForPayload(macroPayload)
                     macroResult = ensureReason or "unknown"
+                    if debugApplyAssignments or debugApplySlots then
+                        addonChat("|cffffcc00[WoWKeyb]|r [macro-ensure] slot=" .. tostring(slot)
+                            .. " blizzSlot=" .. tostring(actionSlot)
+                            .. " key=" .. tostring(wowKey or "-")
+                            .. " macroId=" .. tostring(macroPayload.macroId or "-")
+                            .. " macroName=\"" .. tostring(macroPayload.name or "WoWKeybMacro") .. "\""
+                            .. " result=" .. tostring(macroResult)
+                            .. " macroIndex=" .. tostring(macroIndex or "-"))
+                    end
                     if macroIndex and type(PickupMacro) == "function" then
                         if type(ClearAction) == "function" then
                             pcall(function()
@@ -1965,13 +1974,30 @@ applyProfile = function(profile)
                             ClearCursor()
                             placeResult = "placed"
                             placeReason = "macro-" .. tostring(ensureReason or "ready")
+                            if debugApplyAssignments or debugApplySlots then
+                                addonChat("|cffffcc00[WoWKeyb]|r [macro-place] slot=" .. tostring(slot)
+                                    .. " blizzSlot=" .. tostring(actionSlot)
+                                    .. " macroIndex=" .. tostring(macroIndex)
+                                    .. " result=placed")
+                            end
                         else
                             placeResult = "skip"
                             placeReason = "macro-pickup-failed"
+                            if debugApplyAssignments or debugApplySlots then
+                                addonChat("|cffffcc00[WoWKeyb]|r [macro-place] slot=" .. tostring(slot)
+                                    .. " blizzSlot=" .. tostring(actionSlot)
+                                    .. " macroIndex=" .. tostring(macroIndex)
+                                    .. " result=skip reason=pickup-failed")
+                            end
                         end
                     else
                         placeResult = "skip"
                         placeReason = "macro-missing"
+                        if debugApplyAssignments or debugApplySlots then
+                            addonChat("|cffffcc00[WoWKeyb]|r [macro-place] slot=" .. tostring(slot)
+                                .. " blizzSlot=" .. tostring(actionSlot)
+                                .. " result=skip reason=macro-missing")
+                        end
                     end
                 elseif not keepMacro then
                     -- Clear target slot first so failed pickup does not leave stale/incorrect icons.
