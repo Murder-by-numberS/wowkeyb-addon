@@ -1404,6 +1404,36 @@ local function findExistingMacroByBody(body)
     return nil
 end
 
+local function findExistingMacroByName(name)
+    local target = tostring(name or "")
+    if target == "" or type(GetMacroInfo) ~= "function" then
+        return nil
+    end
+    for _, index in ipairs(getAllMacroIndexes()) do
+        local macroName = GetMacroInfo(index)
+        if tostring(macroName or "") == target then
+            return index
+        end
+    end
+    return nil
+end
+
+local function findExistingMacroById(macroId)
+    local raw = tostring(macroId or "")
+    if raw == "" or type(GetMacroInfo) ~= "function" then
+        return nil
+    end
+    local numericId = tonumber(raw:match("^macro:(.+)$") or raw)
+    if not numericId then
+        return nil
+    end
+    local macroName = GetMacroInfo(numericId)
+    if macroName and tostring(macroName) ~= "" then
+        return numericId
+    end
+    return nil
+end
+
 local function macroNameExists(name)
     if not name or name == "" or type(GetMacroInfo) ~= "function" then
         return false
@@ -1437,6 +1467,14 @@ end
 local function ensureMacroForPayload(payload)
     if type(payload) ~= "table" or not payload.body or payload.body == "" then
         return nil, "missing-body"
+    end
+    local byName = findExistingMacroByName(payload.name)
+    if byName then
+        return byName, "reused-existing-name"
+    end
+    local byId = findExistingMacroById(payload.macroId)
+    if byId then
+        return byId, "reused-existing-id"
     end
     local existing = findExistingMacroByBody(payload.body)
     if existing then
