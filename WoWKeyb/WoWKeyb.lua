@@ -2018,6 +2018,15 @@ applyProfile = function(profile)
                 -- 1. Place spell on action bar (default WoW UI)
                 if macroPayload then
                     local macroIndex, ensureReason = ensureMacroForPayload(macroPayload)
+                    if (not macroIndex) and type(GetMacroIndexByName) == "function" then
+                        local byName = GetMacroIndexByName(tostring(macroPayload.name or ""))
+                        if byName and tonumber(byName) and tonumber(byName) > 0 then
+                            macroIndex = tonumber(byName)
+                            if not ensureReason or ensureReason == "unknown" then
+                                ensureReason = "resolved-by-name"
+                            end
+                        end
+                    end
                     macroResult = ensureReason or "unknown"
                     if debugApplyAssignments or debugApplySlots then
                         addonChat("|cffffcc00[WoWKeyb]|r [macro-ensure] slot=" .. tostring(slot)
@@ -2035,10 +2044,13 @@ applyProfile = function(profile)
                             end)
                         end
                         local pickedUpMacro = false
+                        local cursorType = nil
+                        local cursorPayload = nil
                         pcall(function()
                             PickupMacro(macroIndex)
                         end)
-                        pickedUpMacro = GetCursorInfo() ~= nil
+                        cursorType, cursorPayload = GetCursorInfo()
+                        pickedUpMacro = cursorType == "macro"
                         if pickedUpMacro then
                             PlaceAction(actionSlot)
                             ClearCursor()
@@ -2057,7 +2069,9 @@ applyProfile = function(profile)
                                 addonChat("|cffffcc00[WoWKeyb]|r [macro-place] slot=" .. tostring(slot)
                                     .. " blizzSlot=" .. tostring(actionSlot)
                                     .. " macroIndex=" .. tostring(macroIndex)
-                                    .. " result=skip reason=pickup-failed")
+                                    .. " result=skip reason=pickup-failed"
+                                    .. " cursorType=" .. tostring(cursorType or "-")
+                                    .. " cursorPayload=" .. tostring(cursorPayload or "-"))
                             end
                         end
                     else
