@@ -70,9 +70,6 @@ local function ensureDBDefaults()
     if WoWKeybDB.debugApplyAssignments == nil then
         WoWKeybDB.debugApplyAssignments = false
     end
-    if type(WoWKeybDB.macroIndexByProfileMacroId) ~= "table" then
-        WoWKeybDB.macroIndexByProfileMacroId = {}
-    end
     if WoWKeybDB.minimap.hide == nil then WoWKeybDB.minimap.hide = false end
     if WoWKeybDB.minimap.minimapPos == nil then
         WoWKeybDB.minimap.minimapPos = tonumber(WoWKeybDB.minimap.angle) or 225
@@ -1430,49 +1427,6 @@ local function findExistingMacroByName(name)
     return nil
 end
 
-local function findExistingMacroById(macroId)
-    local raw = tostring(macroId or "")
-    if raw == "" or type(GetMacroInfo) ~= "function" then
-        return nil
-    end
-    local numericId = tonumber(raw:match("^macro:(.+)$") or raw)
-    if not numericId then
-        return nil
-    end
-    local macroName = GetMacroInfo(numericId)
-    if macroName and tostring(macroName) ~= "" then
-        return numericId
-    end
-    return nil
-end
-
-local function resolveMappedMacroIndex(macroId)
-    local key = tostring(macroId or "")
-    if key == "" then return nil end
-    local mapped = WoWKeybDB and WoWKeybDB.macroIndexByProfileMacroId and WoWKeybDB.macroIndexByProfileMacroId[key]
-    local index = tonumber(mapped)
-    if not index or type(GetMacroInfo) ~= "function" then
-        return nil
-    end
-    local macroName = GetMacroInfo(index)
-    if macroName and tostring(macroName) ~= "" then
-        return index
-    end
-    -- Stale mapping; clean it up.
-    WoWKeybDB.macroIndexByProfileMacroId[key] = nil
-    return nil
-end
-
-local function mapProfileMacroIdToIndex(macroId, macroIndex)
-    local key = tostring(macroId or "")
-    local index = tonumber(macroIndex)
-    if key == "" or not index then return end
-    if type(WoWKeybDB.macroIndexByProfileMacroId) ~= "table" then
-        WoWKeybDB.macroIndexByProfileMacroId = {}
-    end
-    WoWKeybDB.macroIndexByProfileMacroId[key] = index
-end
-
 local function macroNameExists(name)
     if not name or name == "" or type(GetMacroInfo) ~= "function" then
         return false
@@ -1507,23 +1461,12 @@ local function ensureMacroForPayload(payload)
     if type(payload) ~= "table" or not payload.body or payload.body == "" then
         return nil, "missing-body"
     end
-    local mapped = resolveMappedMacroIndex(payload.macroId)
-    if mapped then
-        return mapped, "reused-mapped-id"
-    end
     local byName = findExistingMacroByName(payload.name)
     if byName then
-        mapProfileMacroIdToIndex(payload.macroId, byName)
         return byName, "reused-existing-name"
-    end
-    local byId = findExistingMacroById(payload.macroId)
-    if byId then
-        mapProfileMacroIdToIndex(payload.macroId, byId)
-        return byId, "reused-existing-id"
     end
     local existing = findExistingMacroByBody(payload.body)
     if existing then
-        mapProfileMacroIdToIndex(payload.macroId, existing)
         return existing, "reused-existing-body"
     end
     if type(CreateMacro) ~= "function" then
@@ -1536,9 +1479,7 @@ local function ensureMacroForPayload(payload)
         return CreateMacro(macroName, icon, payload.body, true)
     end)
     if okCreate and createdIndex and tonumber(createdIndex) and tonumber(createdIndex) > 0 then
-        local newIndex = tonumber(createdIndex)
-        mapProfileMacroIdToIndex(payload.macroId, newIndex)
-        return newIndex, "created"
+        return tonumber(createdIndex), "created"
     end
     return nil, "create-failed"
 end
