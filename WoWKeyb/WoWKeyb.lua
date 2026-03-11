@@ -2576,13 +2576,15 @@ local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 
 local function base64Encode(input)
     if not input or input == "" then return "" end
-    local bytes = { string.byte(input, 1, #input) }
     local output = {}
+    local inputLength = #input
 
-    for i = 1, #bytes, 3 do
-        local b1 = bytes[i] or 0
-        local b2 = bytes[i + 1] or 0
-        local b3 = bytes[i + 2] or 0
+    -- Process in fixed-size windows; avoid huge vararg expansion from string.byte(input, 1, #input).
+    for i = 1, inputLength, 3 do
+        local b1, b2, b3 = string.byte(input, i, i + 2)
+        b1 = b1 or 0
+        b2 = b2 or 0
+        b3 = b3 or 0
         local n = (b1 * 65536) + (b2 * 256) + b3
 
         local c1 = math.floor(n / 262144) % 64
@@ -2592,8 +2594,8 @@ local function base64Encode(input)
 
         output[#output + 1] = BASE64_ALPHABET:sub(c1 + 1, c1 + 1)
         output[#output + 1] = BASE64_ALPHABET:sub(c2 + 1, c2 + 1)
-        output[#output + 1] = (i + 1 <= #bytes) and BASE64_ALPHABET:sub(c3 + 1, c3 + 1) or "="
-        output[#output + 1] = (i + 2 <= #bytes) and BASE64_ALPHABET:sub(c4 + 1, c4 + 1) or "="
+        output[#output + 1] = (i + 1 <= inputLength) and BASE64_ALPHABET:sub(c3 + 1, c3 + 1) or "="
+        output[#output + 1] = (i + 2 <= inputLength) and BASE64_ALPHABET:sub(c4 + 1, c4 + 1) or "="
     end
 
     return table.concat(output)
