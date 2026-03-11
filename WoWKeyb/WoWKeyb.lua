@@ -1279,6 +1279,15 @@ end
 
 local function buildProfileMacroLookup(profile)
     local lookup = { byId = {}, byName = {} }
+    local function registerMacroId(idValue, payload)
+        local key = tostring(idValue or "")
+        if key == "" then return end
+        lookup.byId[key] = payload
+        local stripped = key:match("^macro:(.+)$")
+        if stripped and stripped ~= "" then
+            lookup.byId[stripped] = payload
+        end
+    end
     if type(profile) ~= "table" or type(profile.macros) ~= "table" then
         return lookup
     end
@@ -1288,18 +1297,16 @@ local function buildProfileMacroLookup(profile)
             local macroName = tostring(macro.name or macro.macroName or macro.macro_name or "")
             local macroBody = macro.macroText or macro.macro_text or macro.text or macro.body
             if macroBody and tostring(macroBody):trim() ~= "" then
+                local payload = {
+                    name = macroName,
+                    body = tostring(macroBody),
+                }
                 if macroId ~= "" then
-                    lookup.byId[macroId] = {
-                        name = macroName,
-                        body = tostring(macroBody),
-                    }
+                    registerMacroId(macroId, payload)
                 end
                 local normalizedName = normalizeSpellText(macroName)
                 if normalizedName ~= "" then
-                    lookup.byName[normalizedName] = {
-                        name = macroName,
-                        body = tostring(macroBody),
-                    }
+                    lookup.byName[normalizedName] = payload
                 end
             end
         end
