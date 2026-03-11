@@ -1264,7 +1264,10 @@ local function normalizeMacroBodyForMatch(body)
         if line == "" and #lines == 0 then
             -- Skip leading empty lines.
         else
-            local trimmed = tostring(line):gsub("^%s+", ""):gsub("%s+$", "")
+            local trimmed = tostring(line):gsub("\t", " ")
+            trimmed = trimmed:gsub("^%s+", ""):gsub("%s+$", "")
+            trimmed = trimmed:gsub("%s+", " ")
+            trimmed = trimmed:lower()
             if trimmed ~= "" then
                 lines[#lines + 1] = trimmed
             end
@@ -1479,6 +1482,12 @@ end
 local function ensureMacroForPayload(payload)
     if type(payload) ~= "table" or not payload.body or payload.body == "" then
         return nil, "missing-body"
+    end
+    if type(GetMacroIndexByName) == "function" then
+        local byApiName = GetMacroIndexByName(tostring(payload.name or ""))
+        if byApiName and tonumber(byApiName) and tonumber(byApiName) > 0 then
+            return tonumber(byApiName), "reused-existing-name-api"
+        end
     end
     local byName = findExistingMacroByName(payload.name)
     if byName then
