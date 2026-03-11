@@ -1991,6 +1991,21 @@ applyProfile = function(profile)
             end
             local spellName = spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName
             local macroPayload = extractMacroPayload(spell, macroLookup)
+            if debugApplyAssignments and not macroPayload then
+                local rawActionType = tostring(spell and (spell.actionType or spell.action_type) or "")
+                local rawIsMacro = tostring(spell and spell.isMacro or false)
+                local rawSpellId = tostring(spell and (spell.spellId or spell.spell_id or spell.id) or "")
+                local rawMacroId = tostring(spell and (spell.macroId or spell.macro_id) or "")
+                local rawMacroText = tostring(spell and (spell.macroText or spell.macro_text or spell.text or spell.body) or "")
+                addonChat("|cffffcc00[WoWKeyb]|r [macro-detect] slot=" .. tostring(slot)
+                    .. " key=" .. tostring(wowKey or "-")
+                    .. " detected=false"
+                    .. " actionType=" .. tostring(rawActionType ~= "" and rawActionType or "-")
+                    .. " isMacro=" .. tostring(rawIsMacro)
+                    .. " spellId=" .. tostring(rawSpellId ~= "" and rawSpellId or "-")
+                    .. " macroId=" .. tostring(rawMacroId ~= "" and rawMacroId or "-")
+                    .. " macroTextLen=" .. tostring(#rawMacroText))
+            end
 
             if spellId then
                 local nameFromId = GetSpellInfo(spellId)
