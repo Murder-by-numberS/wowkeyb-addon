@@ -1372,6 +1372,7 @@ local function extractMacroPayload(spell, macroLookup)
         name = sanitizeMacroName(macroName),
         body = tostring(macroText),
         source = payloadSource,
+        icon = spell.icon,
     }
 end
 
@@ -1454,6 +1455,69 @@ local function ensureMacroForPayload(payload)
         return tonumber(createdIndex), "created"
     end
     return nil, "create-failed"
+end
+
+local function resolveMacroIconForPayload(payload, macroIndex)
+    local function hasIcon(value)
+        return value and tostring(value) ~= ""
+    end
+
+    local function resolveSpellTexture(ref)
+        if not ref or ref == "" then return nil end
+        if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+            local okTex, texture = pcall(C_Spell.GetSpellTexture, ref)
+            if okTex and hasIcon(texture) then
+                return texture
+            end
+        end
+        if _G.GetSpellInfo then
+            local _, _, texture = _G.GetSpellInfo(ref)
+            if hasIcon(texture) then
+                return texture
+            end
+        end
+        return nil
+    end
+
+    -- First try WoW's own macro spell resolution.
+    if macroIndex and type(GetMacroSpell) == "function" then
+        local macroSpellA, macroSpellB = GetMacroSpell(macroIndex)
+        local fromMacro = resolveSpellTexture(tonumber(macroSpellA) or macroSpellA)
+            or resolveSpellTexture(tonumber(macroSpellB) or macroSpellB)
+        if hasIcon(fromMacro) then
+            return fromMacro
+        end
+    end
+
+    -- Parse macro body for first referenced spell id/name.
+    local parsed = parseMacroSpellData(payload and payload.body or "")
+    if parsed and type(parsed.spellIds) == "table" then
+        for spellId in pairs(parsed.spellIds) do
+            local texture = resolveSpellTexture(tonumber(spellId))
+            if hasIcon(texture) then
+                return texture
+            end
+        end
+    end
+    if parsed and type(parsed.spellNames) == "table" then
+        for spellName in pairs(parsed.spellNames) do
+            local texture = resolveSpellTexture(spellName)
+            if hasIcon(texture) then
+                return texture
+            end
+        end
+    end
+
+    -- Last fallback: payload icon if it is WoW-usable (not a web URL).
+    local payloadIcon = payload and payload.icon
+    if hasIcon(payloadIcon) then
+        local iconStr = tostring(payloadIcon)
+        if not iconStr:lower():find("^https?://") then
+            return payloadIcon
+        end
+    end
+
+    return nil
 end
 
 local function syncProfileSpellsFromActionBars(profileName)
@@ -2067,6 +2131,21 @@ applyProfile = function(profile)
                             .. " macroIndex=" .. tostring(macroIndex or "-"))
                     end
                     if macroIndex and type(PickupMacro) == "function" then
+                        if ensureReason == "created" and type(EditMacro) == "function" and type(GetMacroInfo) == "function" then
+                            local resolvedIcon = resolveMacroIconForPayload(macroPayload, macroIndex)
+                            if resolvedIcon then
+                                local macroNameForEdit, _, macroBodyForEdit = GetMacroInfo(macroIndex)
+                                pcall(function()
+                                    EditMacro(
+                                        macroIndex,
+                                        macroNameForEdit or macroPayload.name or "WoWKeybMacro",
+                                        resolvedIcon,
+                                        macroBodyForEdit or macroPayload.body or "",
+                                        true
+                                    )
+                                end)
+                            end
+                        end
                         if type(ClearAction) == "function" then
                             pcall(function()
                                 ClearAction(actionSlot)
