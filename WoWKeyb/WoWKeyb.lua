@@ -1286,6 +1286,14 @@ local function sanitizeMacroName(rawName)
     return name
 end
 
+local function normalizeMacroNameForMatch(rawName)
+    local name = tostring(rawName or "")
+    name = name:gsub("^%s+", ""):gsub("%s+$", "")
+    name = name:gsub("%s+", " ")
+    name = name:lower()
+    return name
+end
+
 local function buildProfileMacroLookup(profile)
     local lookup = { byId = {}, byName = {} }
     local function registerMacroId(idValue, payload)
@@ -1414,17 +1422,28 @@ local function findExistingMacroByBody(body)
 end
 
 local function findExistingMacroByName(name)
-    local target = tostring(name or "")
+    local target = normalizeMacroNameForMatch(name)
     if target == "" or type(GetMacroInfo) ~= "function" then
         return nil
     end
     for _, index in ipairs(getAllMacroIndexes()) do
         local macroName = GetMacroInfo(index)
-        if tostring(macroName or "") == target then
+        if normalizeMacroNameForMatch(macroName) == target then
             return index
         end
     end
     return nil
+end
+
+local function getMacroAccountMatchDiagnostics(payload)
+    local total = #getAllMacroIndexes()
+    local byName = findExistingMacroByName(payload and payload.name)
+    local byBody = findExistingMacroByBody(payload and payload.body)
+    return {
+        total = total,
+        byName = byName,
+        byBody = byBody,
+    }
 end
 
 local function macroNameExists(name)
@@ -2137,6 +2156,15 @@ applyProfile = function(profile)
 
                 -- 1. Place spell on action bar (default WoW UI)
                 if macroPayload then
+                    if debugApplyAssignments or debugApplySlots then
+                        local accountDiag = getMacroAccountMatchDiagnostics(macroPayload)
+                        addonChat("|cffffcc00[WoWKeyb]|r [macro-account] slot=" .. tostring(slot)
+                            .. " key=" .. tostring(wowKey or "-")
+                            .. " macroName=\"" .. tostring(macroPayload.name or "WoWKeybMacro") .. "\""
+                            .. " totalAccountMacros=" .. tostring(accountDiag.total or 0)
+                            .. " byName=" .. tostring(accountDiag.byName or "-")
+                            .. " byBody=" .. tostring(accountDiag.byBody or "-"))
+                    end
                     local macroIndex, ensureReason = ensureMacroForPayload(macroPayload)
                     if (not macroIndex) and type(GetMacroIndexByName) == "function" then
                         local byName = GetMacroIndexByName(tostring(macroPayload.name or ""))
