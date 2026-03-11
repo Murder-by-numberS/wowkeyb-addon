@@ -4713,11 +4713,26 @@ function WoWKeyb:ParseWoWKeybJSON(str)
         if quote ~= '"' then return nil end
         pos = pos + 1
         local start = pos
+        local function unescapeJsonString(raw)
+            if raw == nil or raw == "" then return raw or "" end
+            local out = raw
+            -- Decode common JSON escapes first.
+            out = out:gsub("\\n", "\n")
+            out = out:gsub("\\r", "\r")
+            out = out:gsub("\\t", "\t")
+            out = out:gsub("\\b", "\b")
+            out = out:gsub("\\f", "\f")
+            out = out:gsub("\\/", "/")
+            -- Decode escaped quote/slash last.
+            out = out:gsub('\\"', '"')
+            out = out:gsub("\\\\", "\\")
+            return out
+        end
         while pos <= #str do
             local ch = str:sub(pos, pos)
             if ch == '\\' then pos = pos + 2
             elseif ch == '"' then
-                local s = str:sub(start, pos - 1):gsub('\\"', '"'):gsub("\\\\", "\\")
+                local s = unescapeJsonString(str:sub(start, pos - 1))
                 pos = pos + 1
                 return s
             else pos = pos + 1 end
