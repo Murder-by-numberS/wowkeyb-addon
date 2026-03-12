@@ -1387,14 +1387,18 @@ local function extractMacroPayload(spell, macroLookup)
         end
     end
 
-    if not macroText or tostring(macroText):trim() == "" then
+    local macroBody = tostring(macroText or "")
+    local hasMacroBody = macroBody:trim() ~= ""
+    local hasMacroIdentity = (macroId and macroId ~= "")
+        or (normalizeSpellText(macroName) ~= "")
+    if (not hasMacroBody) and (not hasMacroIdentity) then
         return nil
     end
 
     return {
         macroId = macroId,
         name = sanitizeMacroName(macroName),
-        body = tostring(macroText),
+        body = macroBody,
         source = payloadSource,
         icon = spell.icon,
     }
@@ -3681,16 +3685,14 @@ local function buildViewerData(profile)
         for _, macro in ipairs(profile.macros) do
             if type(macro) == "table" then
                 local macroBody = macro.macroText or macro.macro_text or macro.text or macro.body
-                if macroBody and tostring(macroBody):trim() ~= "" then
-                    local seededPayload = {
-                        macroId = tostring(macro.id or macro.macroId or macro.macro_id or ""),
-                        name = sanitizeMacroName(macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"),
-                        body = tostring(macroBody),
-                        icon = tostring(macro.icon or ""),
-                        source = "profile-list",
-                    }
-                    ensureMacroEntry(seededPayload)
-                end
+                local seededPayload = {
+                    macroId = tostring(macro.id or macro.macroId or macro.macro_id or ""),
+                    name = sanitizeMacroName(macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"),
+                    body = tostring(macroBody or ""),
+                    icon = tostring(macro.icon or ""),
+                    source = "profile-list",
+                }
+                ensureMacroEntry(seededPayload)
             end
         end
     end
@@ -3822,6 +3824,9 @@ local function showMacroCellTooltip(cell)
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine("Macro Body:", 0.9, 0.9, 0.9)
         GameTooltip:AddLine(compactBody, 0.85, 0.85, 0.85, true)
+    else
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Macro Body: not captured", 0.75, 0.75, 0.75)
     end
     GameTooltip:Show()
 end
@@ -4886,9 +4891,9 @@ local function createSettingsPanel()
     UIDropDownMenu_SetWidth(duplicateDropdown, 170)
 
     duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    duplicateBtn:SetSize(70, 24)
+    duplicateBtn:SetSize(90, 24)
     duplicateBtn:SetPoint("LEFT", duplicateDropdown, "RIGHT", 8, 0)
-    duplicateBtn:SetText("Copy Profile")
+    duplicateBtn:SetText("Copy")
     duplicateBtn:SetScript("OnClick", function()
         local destination = selectedProfileName
         local source = duplicateSourceName
@@ -4919,7 +4924,7 @@ local function createSettingsPanel()
     end)
 
     resetBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    resetBtn:SetSize(248, 24)
+    resetBtn:SetSize(180, 24)
     resetBtn:SetPoint("TOPLEFT", duplicateDropdown, "BOTTOMLEFT", 16, -8)
     resetBtn:SetText("Reset Profile")
     resetBtn:SetScript("OnClick", function()
