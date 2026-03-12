@@ -4082,6 +4082,74 @@ local function slotToBarSlotLabel(slot)
     return string.format("Bar %d Slot %d", bar, idx)
 end
 
+local function macroEntrySignature(entry)
+    if type(entry) ~= "table" then
+        return ""
+    end
+    local macroId = tostring(entry.macroId or "")
+    if macroId ~= "" then
+        return "id:" .. macroId
+    end
+    local normalizedBody = normalizeMacroBodyForMatch(entry.body)
+    if normalizedBody ~= "" then
+        return "body:" .. normalizedBody
+    end
+    local name = tostring(entry.name or ""):lower()
+    if name ~= "" then
+        return "name:" .. name
+    end
+    return ""
+end
+
+local function buildLiveMacroEntriesFromBars(slotData)
+    local entries = {}
+    local bySignature = {}
+
+    for slot = 1, 60 do
+        local actionSlot = toBlizzardActionSlot(slot)
+        local actionType, actionId = GetActionInfo(actionSlot)
+        if actionType == "macro" and actionId and type(GetMacroInfo) == "function" then
+            local macroName, macroIcon, macroBody = GetMacroInfo(actionId)
+            local keyLabel = tostring(slotData and slotData[slot] and slotData[slot].key or "")
+            if keyLabel == "" then keyLabel = "-" end
+            local usageLabel = string.format("%s (%s)", slotToBarSlotLabel(slot), keyLabel)
+
+            local entry = {
+                name = tostring(macroName or "WoWKeybMacro"),
+                macroId = tostring(actionId or ""),
+                source = "live-bar",
+                icon = tostring(macroIcon or ""),
+                body = tostring(macroBody or ""),
+                usages = {},
+            }
+            local signature = macroEntrySignature(entry)
+            if signature == "" then
+                signature = "slot:" .. tostring(slot)
+            end
+
+            local existing = bySignature[signature]
+            if not existing then
+                existing = entry
+                entries[#entries + 1] = existing
+                bySignature[signature] = existing
+            end
+            existing.usages[#existing.usages + 1] = usageLabel
+
+            if (not existing.icon or existing.icon == "") and macroIcon and tostring(macroIcon) ~= "" then
+                existing.icon = tostring(macroIcon)
+            end
+            if (not existing.body or existing.body == "") and macroBody and tostring(macroBody) ~= "" then
+                existing.body = tostring(macroBody)
+            end
+        end
+    end
+
+    table.sort(entries, function(a, b)
+        return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
+    end)
+    return entries, bySignature
+end
+
 local function showBarCellTooltip(cell)
     if not cell then return end
     local slot = cell.viewerSlot
@@ -4172,6 +4240,19 @@ local function refreshViewerFrame(frame)
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
     if canRefreshViewerFromGame(frame.profileName) then
         overlayLiveViewerBarData(profile, slotData)
+        local liveMacroEntries, liveBySignature = buildLiveMacroEntriesFromBars(slotData)
+        if #liveMacroEntries > 0 then
+            for _, macro in ipairs(macroEntries or {}) do
+                local signature = macroEntrySignature(macro)
+                if signature ~= "" and not liveBySignature[signature] then
+                    liveMacroEntries[#liveMacroEntries + 1] = macro
+                end
+            end
+            table.sort(liveMacroEntries, function(a, b)
+                return tostring(a and a.name or ""):lower() < tostring(b and b.name or ""):lower()
+            end)
+            macroEntries = liveMacroEntries
+        end
     end
 
     if frame.refreshBtn then
