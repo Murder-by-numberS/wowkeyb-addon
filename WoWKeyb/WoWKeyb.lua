@@ -10,6 +10,10 @@ local BLIZZARD_DEFAULT_PROFILE = "Blizzard Default"
 local MINIMAP_LDB_NAME = "WoWKeyb"
 local SHARE_CODE_PREFIX = "WK1:"
 local ENABLE_LIVE_SLOT_SYNC = false
+local ADDON_SHARE_PREFIX = "WOWKEYB1"
+local SHARE_PROTOCOL_VERSION = "1"
+local SHARE_CHUNK_SIZE = 180
+local SHARE_ENTRY_TTL_SECONDS = 600
 WoWKeyb.isApplyingProfile = false
 
 local function getAddonVersion()
@@ -1748,6 +1752,99 @@ local function syncProfileLayoutKeysFromBindings(profileName)
     return true, changed
 end
 
+local function syncProfileContextFromPlayer(profileName)
+    ensureDBDefaults()
+    local targetName = profileName or WoWKeybDB.currentProfile
+    if not targetName or targetName == BLIZZARD_DEFAULT_PROFILE then
+        return false, 0
+    end
+
+    local profile = getStoredProfile(targetName)
+    if type(profile) ~= "table" then
+        return false, 0
+    end
+
+    local changed = 0
+
+    local _, englishClass, classToken = UnitClass("player")
+    local classValue = tostring(englishClass or classToken or "")
+    if classValue ~= "" and tostring(profile.class or "") ~= classValue then
+        profile.class = classValue
+        changed = changed + 1
+    end
+
+    local specId, specName
+    local specIndex = GetSpecialization and GetSpecialization() or nil
+    if specIndex and GetSpecializationInfo then
+        specId, specName = GetSpecializationInfo(specIndex)
+    end
+    local specValue = tostring(specName or specId or "")
+    local specIdValue = specId and tostring(specId) or ""
+    if specValue ~= "" and tostring(profile.spec or profile.spec_id or profile.specId or profile.specialization or "") ~= specValue then
+        profile.spec = specValue
+        changed = changed + 1
+    end
+    if specIdValue ~= "" and tostring(profile.specId or profile.spec_id or "") ~= specIdValue then
+        profile.specId = specIdValue
+        changed = changed + 1
+    end
+
+    local heroIdValue = ""
+    local heroNameValue = ""
+    if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+        local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+        if okHero and activeHeroId then
+            heroIdValue = tostring(activeHeroId)
+            if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
+                local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, activeHeroId)
+                if okInfo and type(heroInfo) == "table" then
+                    heroNameValue = tostring(heroInfo.name or heroInfo.heroTalentName or "")
+                end
+            end
+        end
+    end
+    local heroValue = heroNameValue ~= "" and heroNameValue or heroIdValue
+    if heroValue ~= "" and tostring(profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId or "") ~= heroValue then
+        profile.heroTalent = heroValue
+        changed = changed + 1
+    end
+    if heroIdValue ~= "" and tostring(profile.heroTalentId or profile.hero_talent_id or "") ~= heroIdValue then
+        profile.heroTalentId = heroIdValue
+        changed = changed + 1
+    end
+
+    return true, changed
+end
+
+local function syncProfileSnapshotFromGame(profileName)
+    local targetName = profileName or WoWKeybDB.currentProfile
+    local contextOk, contextChanged = syncProfileContextFromPlayer(profileName)
+    local spellsOk, spellsChanged = syncProfileSpellsFromActionBars(profileName)
+    local layoutOk, layoutChanged = syncProfileLayoutKeysFromBindings(profileName)
+    local snapshotAt = time()
+    local profile = getStoredProfile(targetName)
+    if type(profile) == "table" then
+        profile.lastSnapshotAt = snapshotAt
+    end
+    return {
+        contextOk = contextOk == true,
+        contextChanged = tonumber(contextChanged) or 0,
+        spellsOk = spellsOk == true,
+        spellsChanged = tonumber(spellsChanged) or 0,
+        layoutOk = layoutOk == true,
+        layoutChanged = tonumber(layoutChanged) or 0,
+        snapshotAt = snapshotAt,
+    }
+end
+
+local function canRefreshViewerFromGame(profileName)
+    local targetName = tostring(profileName or "")
+    if targetName == "" or targetName == BLIZZARD_DEFAULT_PROFILE then
+        return false
+    end
+    return tostring(WoWKeybDB and WoWKeybDB.currentProfile or "") == targetName
+end
+
 local function ensureBlizzardBarsVisible()
     pcall(function() SetCVar("alwaysShowActionBars", "1") end)
     pcall(function() SetCVar("showMultiActionBar1", "1") end)
@@ -2659,6 +2756,313 @@ local function decodeProfileShareCode(text)
     return base64Decode(payload)
 end
 
+local incomingShareTransfers = {}
+local pendingShareImports = {}
+
+local function computeShareChecksum(text)
+    local sum = 0
+    local input = tostring(text or "")
+    for i = 1, #input do
+        sum = (sum + (string.byte(input, i) or 0)) % 2147483647
+    end
+    return tostring(sum)
+end
+
+local function splitIntoShareChunks(text, chunkSize)
+    local chunks = {}
+    local payload = tostring(text or "")
+    local size = tonumber(chunkSize) or SHARE_CHUNK_SIZE
+    if size < 1 then size = SHARE_CHUNK_SIZE end
+    if payload == "" then
+        chunks[1] = ""
+        return chunks
+    end
+    for i = 1, #payload, size do
+        chunks[#chunks + 1] = payload:sub(i, i + size - 1)
+    end
+    return chunks
+end
+
+local function trimRealmFromName(fullName)
+    local value = tostring(fullName or "")
+    local nameOnly = value:match("^([^%-]+)")
+    if nameOnly and nameOnly ~= "" then
+        return nameOnly
+    end
+    return value
+end
+
+local function buildUniqueProfileName(baseName)
+    local root = tostring(baseName or ""):trim()
+    if root == "" then
+        root = "ImportedProfile"
+    end
+    if not WoWKeybDB.profiles[root] then
+        return root
+    end
+    local candidate = root .. " (Copy)"
+    if not WoWKeybDB.profiles[candidate] then
+        return candidate
+    end
+    local index = 2
+    while true do
+        candidate = string.format("%s (Copy %d)", root, index)
+        if not WoWKeybDB.profiles[candidate] then
+            return candidate
+        end
+        index = index + 1
+    end
+end
+
+local function refreshOptionsPanelViews()
+    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshCurrentProfileText then
+        WoWKeyb.optionsPanel.refreshCurrentProfileText()
+    end
+    if WoWKeyb.optionsPanel and WoWKeyb.optionsPanel.refreshProfileSelector then
+        WoWKeyb.optionsPanel.refreshProfileSelector()
+    end
+end
+
+local function importSharedPayload(payload, senderLabel, profileHint)
+    local normalizedPayload = tostring(payload or ""):trim()
+    if normalizedPayload == "" then
+        return false, "Empty share payload"
+    end
+    local decodedJson = decodeProfileShareCode(normalizedPayload) or normalizedPayload
+    local decoded = WoWKeyb:ParseWoWKeybJSON(decodedJson)
+    if not decoded or type(decoded) ~= "table" or type(decoded.keybinds) ~= "table" then
+        return false, "Invalid shared profile payload"
+    end
+
+    local baseName = tostring(decoded.name or profileHint or "ImportedProfile")
+    local finalName = buildUniqueProfileName(baseName)
+    decoded.name = finalName
+    WoWKeybDB.profiles[finalName] = decoded
+
+    refreshOptionsPanelViews()
+    print("|cff00ff00[WoWKeyb]|r Imported shared profile: " .. tostring(finalName)
+        .. " from " .. tostring(senderLabel or "unknown sender"))
+    return true, finalName
+end
+
+local function cleanupExpiredShareState()
+    local now = time()
+    for key, transfer in pairs(incomingShareTransfers) do
+        if type(transfer) ~= "table" or (transfer.createdAt and (now - transfer.createdAt) > SHARE_ENTRY_TTL_SECONDS) then
+            incomingShareTransfers[key] = nil
+        end
+    end
+    for token, pending in pairs(pendingShareImports) do
+        if type(pending) ~= "table" or (pending.createdAt and (now - pending.createdAt) > SHARE_ENTRY_TTL_SECONDS) then
+            pendingShareImports[token] = nil
+        end
+    end
+end
+
+local function shareTokenFor(sender, transferId)
+    local safeSender = tostring(sender or "unknown"):gsub("[|:%s]", "_")
+    local safeTransferId = tostring(transferId or ""):gsub("[|:%s]", "_")
+    return safeSender .. "_" .. safeTransferId
+end
+
+local function promptImportSharedToken(token)
+    local entry = pendingShareImports[token]
+    if type(entry) ~= "table" then
+        print("|cffff0000[WoWKeyb]|r Shared profile link expired or not found.")
+        return
+    end
+    if not StaticPopupDialogs["WOWKEYB_IMPORT_SHARED_CONFIRM"] then
+        StaticPopupDialogs["WOWKEYB_IMPORT_SHARED_CONFIRM"] = {
+            text = "Import shared profile \"%s\" from %s?",
+            button1 = "Import",
+            button2 = "Cancel",
+            OnAccept = function(_, data)
+                if type(data) ~= "table" then
+                    return
+                end
+                local ok, result = importSharedPayload(data.payload, data.sender, data.profileName)
+                if ok then
+                    pendingShareImports[data.token] = nil
+                    WoWKeyb:ShowKeybindingViewer(result)
+                else
+                    print("|cffff0000[WoWKeyb]|r Failed to import shared profile: " .. tostring(result or "Unknown error"))
+                end
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+    StaticPopup_Show("WOWKEYB_IMPORT_SHARED_CONFIRM", tostring(entry.profileName or "SharedProfile"), tostring(entry.sender or "unknown"), {
+        token = token,
+        sender = entry.sender,
+        profileName = entry.profileName,
+        payload = entry.payload,
+    })
+end
+
+local function handleIncomingShareAddonMessage(message, sender)
+    cleanupExpiredShareState()
+    local fields = {}
+    for part in tostring(message or ""):gmatch("([^|]+)") do
+        fields[#fields + 1] = part
+    end
+    if fields[1] ~= "WKSHARE" or fields[2] ~= SHARE_PROTOCOL_VERSION then
+        return
+    end
+
+    local msgType = fields[3]
+    local transferId = tostring(fields[4] or "")
+    if transferId == "" then
+        return
+    end
+
+    local senderKey = tostring(sender or "unknown")
+    local transferKey = senderKey .. ":" .. transferId
+    local now = time()
+
+    if msgType == "START" then
+        local totalChunks = tonumber(fields[5] or "0") or 0
+        local totalLength = tonumber(fields[6] or "0") or 0
+        local profileName = tostring(fields[7] or "SharedProfile")
+        incomingShareTransfers[transferKey] = {
+            sender = senderKey,
+            transferId = transferId,
+            totalChunks = totalChunks,
+            totalLength = totalLength,
+            profileName = profileName,
+            chunks = {},
+            createdAt = now,
+        }
+        return
+    end
+
+    local transfer = incomingShareTransfers[transferKey]
+    if type(transfer) ~= "table" then
+        return
+    end
+    transfer.createdAt = now
+
+    if msgType == "CHUNK" then
+        local idx = tonumber(fields[5] or "0") or 0
+        local chunkData = tostring(fields[6] or "")
+        if idx >= 1 and idx <= math.max(transfer.totalChunks, 1) then
+            transfer.chunks[idx] = chunkData
+        end
+        return
+    end
+
+    if msgType == "END" then
+        local expectedChecksum = tostring(fields[5] or "")
+        local assembled = {}
+        for i = 1, transfer.totalChunks do
+            local piece = transfer.chunks[i]
+            if piece == nil then
+                print("|cffff0000[WoWKeyb]|r Shared profile transfer incomplete from " .. tostring(senderKey))
+                incomingShareTransfers[transferKey] = nil
+                return
+            end
+            assembled[#assembled + 1] = piece
+        end
+        local payload = table.concat(assembled)
+        if transfer.totalLength > 0 and #payload ~= transfer.totalLength then
+            print("|cffff0000[WoWKeyb]|r Shared profile transfer size mismatch from " .. tostring(senderKey))
+            incomingShareTransfers[transferKey] = nil
+            return
+        end
+        local actualChecksum = computeShareChecksum(payload)
+        if expectedChecksum ~= "" and expectedChecksum ~= actualChecksum then
+            print("|cffff0000[WoWKeyb]|r Shared profile checksum mismatch from " .. tostring(senderKey))
+            incomingShareTransfers[transferKey] = nil
+            return
+        end
+
+        local token = shareTokenFor(senderKey, transferId)
+        pendingShareImports[token] = {
+            token = token,
+            sender = senderKey,
+            profileName = transfer.profileName,
+            payload = payload,
+            createdAt = now,
+        }
+        incomingShareTransfers[transferKey] = nil
+
+        local fromName = trimRealmFromName(senderKey)
+        local displayName = tostring(transfer.profileName or "SharedProfile")
+        local importLink = string.format("|Hwowkeybshare:%s|h|cff00ff00[Import \"%s\" from %s]|r|h", token, displayName, fromName)
+        print("|cffffcc00[WoWKeyb]|r Shared profile received: " .. importLink)
+    end
+end
+
+local function sendProfileShareWhisper(targetPlayer, profileName, shareCode)
+    if not C_ChatInfo or type(C_ChatInfo.SendAddonMessage) ~= "function" then
+        return false, "Addon chat API unavailable"
+    end
+    local target = tostring(targetPlayer or ""):trim()
+    if target == "" then
+        return false, "Missing target player"
+    end
+    local payload = tostring(shareCode or "")
+    if payload == "" then
+        return false, "Empty share code"
+    end
+    local chunks = splitIntoShareChunks(payload, SHARE_CHUNK_SIZE)
+    local transferId = string.format("%d%04d", tonumber(time() or 0) % 100000000, math.random(0, 9999))
+    local safeProfileName = tostring(profileName or "SharedProfile"):gsub("|", "/")
+    local checksum = computeShareChecksum(payload)
+
+    local queue = {}
+    queue[#queue + 1] = table.concat({
+        "WKSHARE",
+        SHARE_PROTOCOL_VERSION,
+        "START",
+        transferId,
+        tostring(#chunks),
+        tostring(#payload),
+        safeProfileName,
+    }, "|")
+    for i, chunk in ipairs(chunks) do
+        queue[#queue + 1] = table.concat({
+            "WKSHARE",
+            SHARE_PROTOCOL_VERSION,
+            "CHUNK",
+            transferId,
+            tostring(i),
+            tostring(chunk or ""),
+        }, "|")
+    end
+    queue[#queue + 1] = table.concat({
+        "WKSHARE",
+        SHARE_PROTOCOL_VERSION,
+        "END",
+        transferId,
+        checksum,
+    }, "|")
+
+    local function sendAt(index)
+        local messagePart = queue[index]
+        if not messagePart then
+            return
+        end
+        C_ChatInfo.SendAddonMessage(ADDON_SHARE_PREFIX, messagePart, "WHISPER", target)
+        if index < #queue and C_Timer and type(C_Timer.After) == "function" then
+            C_Timer.After(0.03, function()
+                sendAt(index + 1)
+            end)
+        end
+    end
+
+    if C_Timer and type(C_Timer.After) == "function" then
+        sendAt(1)
+    else
+        for i = 1, #queue do
+            C_ChatInfo.SendAddonMessage(ADDON_SHARE_PREFIX, queue[i], "WHISPER", target)
+        end
+    end
+    return true, string.format("Sent profile \"%s\" to %s (%d chunks)", tostring(profileName or "SharedProfile"), target, #chunks)
+end
+
 local function serializeSyncedProfile(profileName, profile)
     ensureDBDefaults()
     if not profile then
@@ -2777,8 +3181,18 @@ local function serializeSyncedProfile(profileName, profile)
         '}'
     })
 
+    local exportedAt = tostring(time())
+    local snapshotAt = tostring(profile.lastSnapshotAt or profile.last_snapshot_at or exportedAt)
+
     local profileJson = table.concat({
         '{"name":"', jsonEscape(pName),
+        '","exportedAt":"', jsonEscape(exportedAt),
+        '","snapshotAt":"', jsonEscape(snapshotAt),
+        '","class":"', jsonEscape(profile.class or ""),
+        '","spec":"', jsonEscape(profile.spec or profile.spec_id or profile.specId or profile.specialization or ""),
+        '","specId":"', jsonEscape(profile.specId or profile.spec_id or ""),
+        '","heroTalent":"', jsonEscape(profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId or ""),
+        '","heroTalentId":"', jsonEscape(profile.heroTalentId or profile.hero_talent_id or ""),
         '","keybinds":', toJSONArray(keybindChunks),
         ',"macros":', toJSONArray(macroChunks),
         ',"layout":', layoutJson,
@@ -3273,6 +3687,14 @@ local function refreshViewerFrame(frame)
 
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
 
+    if frame.refreshBtn then
+        if canRefreshViewerFromGame(frame.profileName) then
+            frame.refreshBtn:Show()
+        else
+            frame.refreshBtn:Hide()
+        end
+    end
+
     if frame.applyBtn then
         local diagnostics = getProfileMatchDiagnostics(profile)
         if diagnostics and diagnostics.matches then
@@ -3327,6 +3749,11 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         return
     end
 
+    -- Only allow live capture for the active profile to avoid overwriting imported/off-class profiles.
+    if canRefreshViewerFromGame(target) then
+        syncProfileSnapshotFromGame(target)
+    end
+
     if viewerFrame and viewerFrame:IsShown() then
         viewerFrame:Hide()
     end
@@ -3353,11 +3780,11 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local title = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         title:SetPoint("TOPLEFT", 18, -18)
-        title:SetText("WoWKeyb - Keybinding Viewer (read-only)")
+        title:SetText("WoWKeyb - Keybinding Viewer")
 
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-        subtitle:SetText("Visual read-only keyboard, action bar, and macro mapping")
+        subtitle:SetText("Snapshot from live bars/bindings/macros. Use Refresh From Game before export.")
 
         local metaText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
@@ -3561,12 +3988,28 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         viewerFrame.macroMessageFrame = macroMessageFrame
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
-        refreshBtn:SetSize(120, 22)
-        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 140, 18)
-        refreshBtn:SetText("Refresh")
+        refreshBtn:SetSize(150, 22)
+        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 150, 18)
+        refreshBtn:SetText("Refresh From Game")
         refreshBtn:SetScript("OnClick", function()
+            local targetProfile = viewerFrame and viewerFrame.profileName
+            if not targetProfile then
+                print("|cffff0000[WoWKeyb]|r No selected profile to refresh.")
+                return
+            end
+            if not canRefreshViewerFromGame(targetProfile) then
+                print("|cffffcc00[WoWKeyb]|r Refresh From Game is only available for the active profile.")
+                return
+            end
+            local syncResult = syncProfileSnapshotFromGame(targetProfile)
             refreshViewerFrame(viewerFrame)
+            local statusColor = (syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) and "|cff00ff00" or "|cffffcc00"
+            print(statusColor .. "[WoWKeyb]|r Refreshed from game: context "
+                .. tostring(syncResult.contextChanged) .. ", spells/macros "
+                .. tostring(syncResult.spellsChanged) .. ", bindings "
+                .. tostring(syncResult.layoutChanged) .. ".")
         end)
+        viewerFrame.refreshBtn = refreshBtn
 
         local applyBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         applyBtn:SetSize(120, 22)
@@ -3614,10 +4057,12 @@ function WoWKeyb:ShowExportDialog(profileName)
         return
     end
 
-    -- Export should reflect current in-game bars/bindings so users can round-trip
-    -- from game -> addon export -> web import without losing edits.
-    syncProfileSpellsFromActionBars(profileName)
-    syncProfileLayoutKeysFromBindings(profileName)
+    -- Export should reflect current in-game bars/bindings/macros and player context
+    -- so users can round-trip from game -> addon export -> web import.
+    local syncResult = syncProfileSnapshotFromGame(profileName)
+    if not (syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) then
+        print("|cffffcc00[WoWKeyb]|r Export snapshot completed with partial sync; data may be incomplete for this profile.")
+    end
 
     local json, err = serializeSyncedProfile(profileName, profile)
     if not json then
@@ -4484,6 +4929,57 @@ local function slashHandler(msg)
         WoWKeyb:ShowExportDialog(target)
         return
 
+    elseif cmd == "share" or cmd == "sh" then
+        local targetPlayer, profileArg = arg:match("^(%S+)%s*(.*)$")
+        if not targetPlayer or targetPlayer == "" then
+            print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb share <player> [profile name]")
+            return
+        end
+        local targetProfile = profileArg and profileArg:trim() or ""
+        if targetProfile == "" then
+            targetProfile = WoWKeybDB.currentProfile
+        end
+        if not targetProfile or targetProfile == "" then
+            print("|cffff0000[WoWKeyb]|r No profile selected to share.")
+            return
+        end
+        if targetProfile == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be shared.")
+            return
+        end
+        local profile = getStoredProfile(targetProfile)
+        if not profile then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(targetProfile))
+            return
+        end
+
+        -- Only sync from live game state when sharing the active profile.
+        if canRefreshViewerFromGame(targetProfile) then
+            syncProfileSnapshotFromGame(targetProfile)
+        end
+
+        local json, err = serializeSyncedProfile(targetProfile, profile)
+        if not json then
+            print("|cffff0000[WoWKeyb]|r Failed to build shared payload: " .. tostring(err or "unknown error"))
+            return
+        end
+        local shareCode = encodeProfileShareCode(json)
+        local okShare, shareMsg = sendProfileShareWhisper(targetPlayer, targetProfile, shareCode)
+        if okShare then
+            print("|cff00ff00[WoWKeyb]|r " .. tostring(shareMsg))
+        else
+            print("|cffff0000[WoWKeyb]|r Share failed: " .. tostring(shareMsg or "unknown error"))
+        end
+        return
+
+    elseif cmd == "shareaccept" or cmd == "sa" then
+        if arg == "" then
+            print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb shareaccept <token>")
+            return
+        end
+        promptImportSharedToken(arg)
+        return
+
     elseif cmd == "view" or cmd == "v" then
         local target = arg ~= "" and arg or WoWKeybDB.currentProfile
         if not target then
@@ -4508,6 +5004,7 @@ local function slashHandler(msg)
         print("  /wowkeyb toggle       - Toggle between last two profiles")
         print("  /wowkeyb import <name> - Import profile from profile code")
         print("  /wowkeyb export [name] - Export selected profile as share code string")
+        print("  /wowkeyb share <player> [name] - Whisper a profile to another WoWKeyb user")
         print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
         print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb listall      - List all profiles (ignore class/spec filter)")
@@ -4865,6 +5362,24 @@ function WoWKeyb:ParseWoWKeybJSON(str)
     return nil
 end
 
+local function ensureShareLinkHook()
+    if WoWKeyb.shareLinkHookInstalled then
+        return
+    end
+    local previousSetItemRef = SetItemRef
+    SetItemRef = function(link, text, button, chatFrame, ...)
+        if type(link) == "string" and link:sub(1, 13) == "wowkeybshare:" then
+            local token = link:sub(14)
+            promptImportSharedToken(token)
+            return
+        end
+        if previousSetItemRef then
+            return previousSetItemRef(link, text, button, chatFrame, ...)
+        end
+    end
+    WoWKeyb.shareLinkHookInstalled = true
+end
+
 -- Register slash commands
 SLASH_WOWKEYB1 = "/wowkeyb"
 SLASH_WOWKEYB2 = "/wk"
@@ -4886,6 +5401,19 @@ do
         if event == "PLAYER_LOGIN" then
             createSettingsPanel()
             createMinimapButton()
+            ensureShareLinkHook()
+            if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix) == "function" then
+                C_ChatInfo.RegisterAddonMessagePrefix(ADDON_SHARE_PREFIX)
+            end
+
+            local shareFrame = CreateFrame("Frame")
+            shareFrame:RegisterEvent("CHAT_MSG_ADDON")
+            shareFrame:SetScript("OnEvent", function(_, _, prefix, message, _, sender)
+                if prefix ~= ADDON_SHARE_PREFIX then
+                    return
+                end
+                handleIncomingShareAddonMessage(message, sender)
+            end)
 
             -- Keep stored profile spells in sync with manual bar changes in-game.
             local syncFrame = CreateFrame("Frame")
