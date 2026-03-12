@@ -1608,56 +1608,83 @@ local function syncProfileSpellsFromActionBars(profileName)
                 local currentSpell = keybind.spell or {}
                 local actionSlot = toBlizzardActionSlot(slot)
                 local actionType = GetActionInfo(actionSlot)
-                local currentIsMacro = currentSpell.isMacro == true
-                    or tostring(currentSpell.actionType or currentSpell.action_type or ""):lower() == "macro"
-                    or tostring(currentSpell.spellId or currentSpell.spell_id or ""):lower():find("^macro:") ~= nil
+
+                local function setSpellFromSlot(nextSpell)
+                    local prevSpellId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
+                    local prevName = tostring(currentSpell.name or "")
+                    local prevIcon = tostring(currentSpell.icon or "")
+                    local prevActionType = tostring(currentSpell.actionType or currentSpell.action_type or "")
+                    local prevIsMacro = currentSpell.isMacro == true
+                    local prevMacroId = tostring(currentSpell.macroId or currentSpell.macro_id or prevSpellId:match("^macro:(.+)$") or "")
+                    local prevMacroText = tostring(currentSpell.macroText or currentSpell.macro_text or currentSpell.text or currentSpell.body or "")
+                    local prevSourceSpellId = tostring(currentSpell.sourceSpellId or currentSpell.source_spell_id or "")
+                    local prevSourceSpellName = tostring(currentSpell.sourceSpellName or currentSpell.source_spell_name or "")
+
+                    local nextSpellId = tostring(nextSpell and nextSpell.spellId or "")
+                    local nextName = tostring(nextSpell and nextSpell.name or "")
+                    local nextIcon = tostring(nextSpell and nextSpell.icon or "")
+                    local nextActionType = tostring(nextSpell and nextSpell.actionType or "spell")
+                    local nextIsMacro = nextSpell and nextSpell.isMacro == true or false
+                    local nextMacroId = tostring(nextSpell and nextSpell.macroId or "")
+                    local nextMacroText = tostring(nextSpell and nextSpell.macroText or "")
+                    local nextSourceSpellId = tostring(nextSpell and nextSpell.sourceSpellId or "")
+                    local nextSourceSpellName = tostring(nextSpell and nextSpell.sourceSpellName or "")
+
+                    if prevSpellId ~= nextSpellId
+                        or prevName ~= nextName
+                        or prevIcon ~= nextIcon
+                        or prevActionType ~= nextActionType
+                        or prevIsMacro ~= nextIsMacro
+                        or prevMacroId ~= nextMacroId
+                        or prevMacroText ~= nextMacroText
+                        or prevSourceSpellId ~= nextSourceSpellId
+                        or prevSourceSpellName ~= nextSourceSpellName then
+                        keybind.spell = {
+                            spellId = nextSpellId,
+                            name = nextName,
+                            icon = nextIcon,
+                            description = currentSpell.description or "",
+                            actionType = nextActionType,
+                            isMacro = nextIsMacro,
+                            macroId = nextMacroId,
+                            macroText = nextMacroText,
+                            sourceSpellId = nextSourceSpellId,
+                            sourceSpellName = nextSourceSpellName,
+                        }
+                        changed = changed + 1
+                    end
+                end
 
                 if actionType == "macro" then
                     local barMacro = readMacroFromActionSlot(actionSlot)
                     if barMacro then
-                        local prevSpellId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
-                        local prevMacroId = tostring(currentSpell.macroId or currentSpell.macro_id or prevSpellId:match("^macro:(.+)$") or "")
-                        local prevMacroText = tostring(currentSpell.macroText or currentSpell.macro_text or currentSpell.text or currentSpell.body or "")
-                        local prevName = tostring(currentSpell.name or currentSpell.macroName or currentSpell.macro_name or "")
-                        local prevIcon = tostring(currentSpell.icon or "")
-                        if (not currentIsMacro)
-                            or prevMacroId ~= tostring(barMacro.macroId or "")
-                            or prevMacroText ~= tostring(barMacro.macroText or "")
-                            or prevName ~= tostring(barMacro.name or "")
-                            or prevIcon ~= tostring(barMacro.icon or "") then
-                            keybind.spell = {
-                                spellId = barMacro.spellId,
-                                name = barMacro.name,
-                                icon = barMacro.icon,
-                                description = currentSpell.description or "",
-                                actionType = "macro",
-                                isMacro = true,
-                                macroId = barMacro.macroId,
-                                macroText = barMacro.macroText,
-                                sourceSpellId = currentSpell.sourceSpellId or currentSpell.source_spell_id or "",
-                                sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
-                            }
-                            changed = changed + 1
-                        end
+                        setSpellFromSlot({
+                            spellId = barMacro.spellId,
+                            name = barMacro.name,
+                            icon = barMacro.icon,
+                            actionType = "macro",
+                            isMacro = true,
+                            macroId = barMacro.macroId,
+                            macroText = barMacro.macroText,
+                            sourceSpellId = currentSpell.sourceSpellId or currentSpell.source_spell_id or "",
+                            sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
+                        })
+                    else
+                        setSpellFromSlot(nil)
                     end
                 else
-                    -- Preserve existing macro payloads unless the slot is no longer a macro.
-                    if not currentIsMacro then
-                        local barSpell = readSpellFromActionSlot(actionSlot)
-                        if barSpell then
-                            local prevId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
-                            local prevName = tostring(currentSpell.name or "")
-                            local prevIcon = tostring(currentSpell.icon or "")
-                            if prevId ~= barSpell.spellId or prevName ~= barSpell.name or prevIcon ~= barSpell.icon then
-                                keybind.spell = {
-                                    spellId = barSpell.spellId,
-                                    name = barSpell.name,
-                                    icon = barSpell.icon,
-                                    description = currentSpell.description or "",
-                                }
-                                changed = changed + 1
-                            end
-                        end
+                    local barSpell = readSpellFromActionSlot(actionSlot)
+                    if barSpell then
+                        setSpellFromSlot({
+                            spellId = barSpell.spellId,
+                            name = barSpell.name,
+                            icon = barSpell.icon,
+                            actionType = "spell",
+                            isMacro = false,
+                        })
+                    else
+                        -- Slot no longer points to a spell/macro (or is empty); clear stale mapping.
+                        setSpellFromSlot(nil)
                     end
                 end
             end
@@ -1843,6 +1870,122 @@ local function canRefreshViewerFromGame(profileName)
         return false
     end
     return tostring(WoWKeybDB and WoWKeybDB.currentProfile or "") == targetName
+end
+
+local function buildUniqueAutoProfileName(baseName)
+    local name = tostring(baseName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        name = "Auto Profile"
+    end
+    if not WoWKeybDB.profiles[name] then
+        return name
+    end
+    local index = 2
+    while true do
+        local candidate = string.format("%s (%d)", name, index)
+        if not WoWKeybDB.profiles[candidate] then
+            return candidate
+        end
+        index = index + 1
+    end
+end
+
+local function createProfileFromCurrentGameContext()
+    ensureDBDefaults()
+
+    local _, englishClass, classToken = UnitClass("player")
+    local className = tostring(englishClass or classToken or "Unknown")
+
+    local specId, specName
+    local specIndex = GetSpecialization and GetSpecialization() or nil
+    if specIndex and GetSpecializationInfo then
+        specId, specName = GetSpecializationInfo(specIndex)
+    end
+    local resolvedSpecName = tostring(specName or specId or "Unknown Spec")
+    local resolvedSpecId = specId and tostring(specId) or ""
+
+    local heroIdValue = ""
+    local heroNameValue = ""
+    if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+        local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+        if okHero and activeHeroId then
+            heroIdValue = tostring(activeHeroId)
+            if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
+                local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, activeHeroId)
+                if okInfo and type(heroInfo) == "table" then
+                    heroNameValue = tostring(heroInfo.name or heroInfo.heroTalentName or "")
+                end
+            end
+        end
+    end
+    local resolvedHeroName = heroNameValue ~= "" and heroNameValue or (heroIdValue ~= "" and heroIdValue or "No Hero")
+
+    local baseProfileName = string.format("%s - %s - %s", className, resolvedSpecName, resolvedHeroName)
+    local profileName = buildUniqueAutoProfileName(baseProfileName)
+
+    local profile = {
+        name = profileName,
+        class = className,
+        spec = resolvedSpecName,
+        specId = resolvedSpecId,
+        heroTalent = resolvedHeroName,
+        heroTalentId = heroIdValue,
+        keybinds = {},
+        layout = {
+            bars = {},
+            barMode = "blizzard",
+            screenWidth = 2560,
+            screenHeight = 1440,
+            barGap = 16,
+        },
+    }
+
+    local bars = {}
+    for barIdx = 1, 5 do
+        local bar = {
+            id = "bar" .. tostring(barIdx),
+            slots = 12,
+            slotKeys = {},
+            position = {
+                anchor = "center",
+                x = 1280,
+                y = 720,
+            },
+            orientation = "horizontal",
+            scale = 1,
+        }
+        for slotIdx = 1, 12 do
+            local globalSlot = ((barIdx - 1) * 12) + slotIdx
+            local command = SLOT_COMMANDS[globalSlot]
+            local wowKey = command and firstBindingForCommand(command) or nil
+            bar.slotKeys[slotIdx] = wowBindingToProfileKey(wowKey)
+        end
+        bars[barIdx] = bar
+    end
+    profile.layout.bars = bars
+
+    for slot = 1, 60 do
+        local actionSlot = toBlizzardActionSlot(slot)
+        local spell = readMacroFromActionSlot(actionSlot) or readSpellFromActionSlot(actionSlot)
+        if spell then
+            local barIdx = math.floor((slot - 1) / 12) + 1
+            local slotIdx = ((slot - 1) % 12) + 1
+            local command = SLOT_COMMANDS[slot]
+            local wowKey = command and firstBindingForCommand(command) or nil
+            local profileKey = wowBindingToProfileKey(wowKey)
+
+            local keybind = {
+                key = profileKey,
+                spell = spell,
+                barId = "bar" .. tostring(barIdx),
+                slotIndex = slotIdx - 1,
+            }
+            profile.keybinds[#profile.keybinds + 1] = keybind
+        end
+    end
+
+    WoWKeybDB.profiles[profileName] = profile
+    return profileName, profile
 end
 
 local function ensureBlizzardBarsVisible()
@@ -2602,6 +2745,7 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
     local matchingProfiles = listStoredProfiles(true)
     local target = BLIZZARD_DEFAULT_PROFILE
     local targetReason = "default"
+    local targetCreated = false
 
     if #matchingProfiles > 0 then
         local preferred = getPreferredProfileForCurrentContext()
@@ -2627,12 +2771,29 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
             target = matchingProfiles[1]
             targetReason = "first_match"
         end
+    else
+        local createdName = createProfileFromCurrentGameContext()
+        if createdName and createdName ~= "" then
+            target = createdName
+            targetReason = "auto_created"
+            targetCreated = true
+        end
     end
 
     if target == current then
         if target ~= BLIZZARD_DEFAULT_PROFILE then
             setPreferredProfileForCurrentContext(target)
         end
+        return
+    end
+
+    if targetCreated then
+        if WoWKeybDB.currentProfile ~= target then
+            WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
+            WoWKeybDB.currentProfile = target
+        end
+        setPreferredProfileForCurrentContext(target)
+        print("|cff00ff00[WoWKeyb]|r Auto-created profile for current class/spec/hero: " .. tostring(target))
         return
     end
 
@@ -3240,12 +3401,20 @@ local function buildViewerData(profile)
         end
         local existing = macroBySignature[signature]
         if existing then
+            if (not existing.icon or existing.icon == "") and macroPayload.icon and tostring(macroPayload.icon) ~= "" then
+                existing.icon = tostring(macroPayload.icon)
+            end
+            if (not existing.body or existing.body == "") and macroPayload.body and tostring(macroPayload.body) ~= "" then
+                existing.body = tostring(macroPayload.body)
+            end
             return existing
         end
         local entry = {
             name = tostring(macroPayload.name or "WoWKeybMacro"),
             macroId = tostring(macroPayload.macroId or ""),
             source = tostring(macroPayload.source or "spell"),
+            icon = tostring(macroPayload.icon or ""),
+            body = tostring(macroPayload.body or ""),
             usages = {},
         }
         macroBySignature[signature] = entry
@@ -3445,8 +3614,12 @@ local function buildViewerData(profile)
             end
             local spellIcon = (macroPayload and resolveViewerMacroIcon(spell, macroPayload)) or resolveViewerSpellIcon(spell)
             if macroPayload then
+                macroPayload.icon = spellIcon or macroPayload.icon
                 local macroEntry = ensureMacroEntry(macroPayload)
                 if macroEntry then
+                    if (not macroEntry.icon or macroEntry.icon == "") and spellIcon and tostring(spellIcon) ~= "" then
+                        macroEntry.icon = tostring(spellIcon)
+                    end
                     macroEntry.usages[#macroEntry.usages + 1] = formatMacroUsage(slot, kb.key or "")
                 end
             end
@@ -3513,6 +3686,7 @@ local function buildViewerData(profile)
                         macroId = tostring(macro.id or macro.macroId or macro.macro_id or ""),
                         name = sanitizeMacroName(macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"),
                         body = tostring(macroBody),
+                        icon = tostring(macro.icon or ""),
                         source = "profile-list",
                     }
                     ensureMacroEntry(seededPayload)
@@ -3576,8 +3750,24 @@ end
 local function setBarViewerCell(cell, key, spellName, icon)
     if not cell then return end
     local cleanKey = (key and key ~= "") and key or "-"
-    -- Keep slot visuals icon-only; show keybind details on hover tooltip.
-    cell.keyText:SetText("")
+    local compactKey = cleanKey
+    compactKey = compactKey:gsub("Ctrl%+", "C+")
+    compactKey = compactKey:gsub("Shift%+", "S+")
+    compactKey = compactKey:gsub("Alt%+", "A+")
+    if compactKey == "-" then
+        compactKey = ""
+    end
+
+    if cell.keyText then
+        cell.keyText:SetText(compactKey)
+    end
+    if cell.keyBadge then
+        if compactKey ~= "" then
+            cell.keyBadge:Show()
+        else
+            cell.keyBadge:Hide()
+        end
+    end
     cell.spellText:SetText("")
     cell.viewerKey = cleanKey
     cell.viewerSpellName = (spellName and spellName ~= "") and spellName or "-"
@@ -3589,6 +3779,78 @@ local function setBarViewerCell(cell, key, spellName, icon)
         cell.icon:SetTexture(nil)
         cell.icon:Hide()
     end
+end
+
+local function showMacroCellTooltip(cell)
+    local macro = cell and cell.viewerMacro
+    if type(macro) ~= "table" then
+        return
+    end
+    GameTooltip:SetOwner(cell, "ANCHOR_RIGHT")
+    GameTooltip:ClearLines()
+
+    local name = tostring(macro.name or "WoWKeybMacro")
+    local icon = tostring(macro.icon or "")
+    local macroId = tostring(macro.macroId or "")
+    local body = tostring(macro.body or "")
+    local usages = type(macro.usages) == "table" and macro.usages or {}
+
+    if icon ~= "" then
+        GameTooltip:AddLine(string.format("|T%s:14|t %s", icon, name), 1, 1, 1)
+    else
+        GameTooltip:AddLine(name, 1, 1, 1)
+    end
+    if macroId ~= "" then
+        GameTooltip:AddLine("Macro ID: " .. macroId, 0.8, 0.8, 0.8)
+    end
+    if #usages > 0 then
+        GameTooltip:AddLine("Usage:", 0.9, 0.9, 0.9)
+        for i = 1, math.min(#usages, 3) do
+            GameTooltip:AddLine(" - " .. tostring(usages[i]), 0.8, 0.8, 0.8)
+        end
+        if #usages > 3 then
+            GameTooltip:AddLine(string.format(" - ... +%d more", #usages - 3), 0.7, 0.7, 0.7)
+        end
+    else
+        GameTooltip:AddLine("Usage: Unassigned", 0.8, 0.8, 0.8)
+    end
+    if body ~= "" then
+        local compactBody = body:gsub("\r", "")
+        if #compactBody > 240 then
+            compactBody = compactBody:sub(1, 240) .. "..."
+        end
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Macro Body:", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine(compactBody, 0.85, 0.85, 0.85, true)
+    end
+    GameTooltip:Show()
+end
+
+local function setMacroViewerCell(cell, macro)
+    if not cell then return end
+    if type(macro) ~= "table" then
+        cell.viewerMacro = nil
+        cell.icon:SetTexture(nil)
+        cell.icon:Hide()
+        cell.usageText:SetText("")
+        cell:Hide()
+        return
+    end
+
+    cell.viewerMacro = macro
+    local icon = tostring(macro.icon or "")
+    if icon == "" then
+        icon = "INV_MISC_QUESTIONMARK"
+    end
+    cell.icon:SetTexture(icon)
+    cell.icon:Show()
+    local usageCount = type(macro.usages) == "table" and #macro.usages or 0
+    if usageCount > 0 then
+        cell.usageText:SetText(tostring(usageCount))
+    else
+        cell.usageText:SetText("")
+    end
+    cell:Show()
 end
 
 local function slotToBarSlotLabel(slot)
@@ -3718,19 +3980,71 @@ local function refreshViewerFrame(frame)
         end
     end
 
-    if frame.macroMessageFrame then
-        frame.macroMessageFrame:Clear()
-        if type(macroEntries) ~= "table" or #macroEntries == 0 then
-            frame.macroMessageFrame:AddMessage("No macros found in this profile.")
-        else
-            for _, macro in ipairs(macroEntries) do
-                local label = tostring(macro.name or "WoWKeybMacro")
-                local idPart = (macro.macroId and macro.macroId ~= "") and (" [id:" .. tostring(macro.macroId) .. "]") or ""
-                local usagePart = "unused"
-                if type(macro.usages) == "table" and #macro.usages > 0 then
-                    usagePart = table.concat(macro.usages, ", ")
+    if frame.macroCells and frame.macroScrollContent then
+        local entries = type(macroEntries) == "table" and macroEntries or {}
+        local iconSize, iconGap, perRow = 38, 6, 20
+        for i, macro in ipairs(entries) do
+            local cell = frame.macroCells[i]
+            if not cell then
+                cell = CreateFrame("Frame", nil, frame.macroScrollContent, "BackdropTemplate")
+                cell:SetSize(iconSize, iconSize)
+                if cell.SetBackdrop then
+                    cell:SetBackdrop({
+                        bgFile = "Interface\\Buttons\\WHITE8X8",
+                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                        tile = false, edgeSize = 8,
+                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                    })
+                    cell:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
+                    cell:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
                 end
-                frame.macroMessageFrame:AddMessage(label .. idPart .. " -> " .. usagePart)
+                cell.icon = cell:CreateTexture(nil, "ARTWORK")
+                cell.icon:SetPoint("TOPLEFT", 2, -2)
+                cell.icon:SetPoint("BOTTOMRIGHT", -2, 2)
+                cell.icon:Hide()
+                cell.usageText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                cell.usageText:SetPoint("BOTTOMRIGHT", -2, 2)
+                cell.usageText:SetText("")
+                cell:SetScript("OnEnter", function(self)
+                    if self.SetBackdropColor then
+                        self:SetBackdropColor(0.18, 0.18, 0.22, 0.98)
+                    end
+                    if self.SetBackdropBorderColor then
+                        self:SetBackdropBorderColor(0.6, 0.6, 0.75, 1)
+                    end
+                    showMacroCellTooltip(self)
+                end)
+                cell:SetScript("OnLeave", function(self)
+                    if self.SetBackdropColor then
+                        self:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
+                    end
+                    if self.SetBackdropBorderColor then
+                        self:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
+                    end
+                    GameTooltip:Hide()
+                end)
+                frame.macroCells[i] = cell
+            end
+
+            local row = math.floor((i - 1) / perRow)
+            local col = (i - 1) % perRow
+            cell:SetPoint("TOPLEFT", col * (iconSize + iconGap), -row * (iconSize + iconGap))
+            setMacroViewerCell(cell, macro)
+        end
+
+        for i = #entries + 1, #frame.macroCells do
+            setMacroViewerCell(frame.macroCells[i], nil)
+        end
+
+        local rows = math.max(1, math.ceil(math.max(#entries, 1) / perRow))
+        local contentHeight = rows * (iconSize + iconGap)
+        frame.macroScrollContent:SetSize(1, contentHeight)
+
+        if frame.macroEmptyText then
+            if #entries == 0 then
+                frame.macroEmptyText:Show()
+            else
+                frame.macroEmptyText:Hide()
             end
         end
     end
@@ -3919,8 +4233,16 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 cell.icon:Hide()
 
                 cell.keyText = cell:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-                cell.keyText:SetPoint("TOPLEFT", 2, -2)
+                cell.keyText:SetPoint("BOTTOM", 0, 3)
                 cell.keyText:SetText("")
+
+                cell.keyBadge = cell:CreateTexture(nil, "OVERLAY")
+                cell.keyBadge:SetTexture("Interface\\Buttons\\WHITE8X8")
+                cell.keyBadge:SetPoint("BOTTOMLEFT", 2, 2)
+                cell.keyBadge:SetPoint("BOTTOMRIGHT", -2, 2)
+                cell.keyBadge:SetHeight(11)
+                cell.keyBadge:SetVertexColor(0, 0, 0, 0.72)
+                cell.keyBadge:Hide()
 
                 cell.spellText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
                 cell.spellText:SetPoint("BOTTOMLEFT", 2, 2)
@@ -3970,22 +4292,20 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
             macrosContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
         end
 
-        local macroMessageFrame = CreateFrame("ScrollingMessageFrame", nil, macrosContainer)
-        macroMessageFrame:SetPoint("TOPLEFT", 8, -8)
-        macroMessageFrame:SetPoint("BOTTOMRIGHT", -8, 8)
-        macroMessageFrame:SetMaxLines(300)
-        macroMessageFrame:SetFading(false)
-        macroMessageFrame:SetJustifyH("LEFT")
-        macroMessageFrame:SetFontObject(_G.GameFontHighlightSmall)
-        macroMessageFrame:EnableMouseWheel(true)
-        macroMessageFrame:SetScript("OnMouseWheel", function(self, delta)
-            if delta > 0 then
-                self:ScrollUp()
-            else
-                self:ScrollDown()
-            end
-        end)
-        viewerFrame.macroMessageFrame = macroMessageFrame
+        local macroScroll = CreateFrame("ScrollFrame", nil, macrosContainer, "UIPanelScrollFrameTemplate")
+        macroScroll:SetPoint("TOPLEFT", 8, -8)
+        macroScroll:SetPoint("BOTTOMRIGHT", -26, 8)
+        local macroScrollContent = CreateFrame("Frame", nil, macroScroll)
+        macroScrollContent:SetSize(1, 1)
+        macroScroll:SetScrollChild(macroScrollContent)
+        viewerFrame.macroScroll = macroScroll
+        viewerFrame.macroScrollContent = macroScrollContent
+        viewerFrame.macroCells = {}
+
+        local macroEmptyText = macrosContainer:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        macroEmptyText:SetPoint("CENTER")
+        macroEmptyText:SetText("No macros found in this profile.")
+        viewerFrame.macroEmptyText = macroEmptyText
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(150, 22)
@@ -4195,6 +4515,11 @@ local function createSettingsPanel()
     profileDropdown:SetPoint("TOPLEFT", profileLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(profileDropdown, 220)
     local applyBtn
+    local createBtn
+    local duplicateBtn
+    local resetBtn
+    local duplicateDropdown
+    local duplicateSourceName = nil
 
     local profileStatusText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     profileStatusText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
@@ -4232,7 +4557,139 @@ local function createSettingsPanel()
                 applyBtn:Disable()
             end
         end
-        applyBtn:SetText("Apply Selected Profile")
+        applyBtn:SetText("Apply Profile")
+    end
+
+    local function deepCopy(value)
+        if type(value) ~= "table" then
+            return value
+        end
+        local out = {}
+        for k, v in pairs(value) do
+            out[deepCopy(k)] = deepCopy(v)
+        end
+        return out
+    end
+
+    local function buildDefaultLayoutBars()
+        local bars = {}
+        for barIdx = 1, 5 do
+            bars[barIdx] = {
+                id = "bar" .. tostring(barIdx),
+                slots = 12,
+                slotKeys = {},
+                position = {
+                    anchor = "center",
+                    x = 1280,
+                    y = 720,
+                },
+                orientation = "horizontal",
+                scale = 1,
+            }
+        end
+        return bars
+    end
+
+    local function buildDefaultProfileState(profileName, existingProfile)
+        local profile = type(existingProfile) == "table" and existingProfile or {}
+        local classValue = tostring(profile.class or "")
+        local specValue = tostring(profile.spec or profile.spec_id or profile.specId or profile.specialization or "")
+        local specIdValue = tostring(profile.specId or profile.spec_id or "")
+        local heroValue = tostring(profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId or "")
+        local heroIdValue = tostring(profile.heroTalentId or profile.hero_talent_id or "")
+
+        if classValue == "" then
+            local _, englishClass, classToken = UnitClass("player")
+            classValue = tostring(englishClass or classToken or "Unknown")
+        end
+        if specValue == "" then
+            local specIndex = GetSpecialization and GetSpecialization() or nil
+            if specIndex and GetSpecializationInfo then
+                local specId, specName = GetSpecializationInfo(specIndex)
+                specValue = tostring(specName or specId or "")
+                specIdValue = specId and tostring(specId) or specIdValue
+            end
+        end
+        if heroValue == "" and C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+            local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+            if okHero and activeHeroId then
+                heroIdValue = tostring(activeHeroId)
+                if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
+                    local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, activeHeroId)
+                    if okInfo and type(heroInfo) == "table" then
+                        heroValue = tostring(heroInfo.name or heroInfo.heroTalentName or "")
+                    end
+                end
+                if heroValue == "" then
+                    heroValue = heroIdValue
+                end
+            end
+        end
+
+        return {
+            name = tostring(profileName or "New Profile"),
+            class = classValue,
+            spec = specValue,
+            specId = specIdValue,
+            heroTalent = heroValue,
+            heroTalentId = heroIdValue,
+            keybinds = {},
+            macros = {},
+            layout = {
+                bars = buildDefaultLayoutBars(),
+                barMode = "blizzard",
+                screenWidth = 2560,
+                screenHeight = 1440,
+                barGap = 16,
+            },
+        }
+    end
+
+    local function refreshDuplicateSourceSelector()
+        if not duplicateDropdown then return end
+        local candidates = {}
+        for name, _ in pairs(WoWKeybDB.profiles or {}) do
+            if name ~= selectedProfileName then
+                candidates[#candidates + 1] = name
+            end
+        end
+        table.sort(candidates)
+
+        local validSelection = false
+        for _, name in ipairs(candidates) do
+            if name == duplicateSourceName then
+                validSelection = true
+                break
+            end
+        end
+        if not validSelection then
+            duplicateSourceName = candidates[1]
+        end
+
+        UIDropDownMenu_Initialize(duplicateDropdown, function(self, level)
+            for _, name in ipairs(candidates) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = tostring(name)
+                info.checked = (name == duplicateSourceName)
+                info.func = function()
+                    duplicateSourceName = name
+                    UIDropDownMenu_SetText(duplicateDropdown, name)
+                end
+                UIDropDownMenu_AddButton(info, level)
+            end
+        end)
+        UIDropDownMenu_SetText(duplicateDropdown, duplicateSourceName or "No source profile")
+
+        if duplicateBtn and duplicateBtn.Enable then
+            if duplicateSourceName and duplicateSourceName ~= "" and selectedProfileName
+                and selectedProfileName ~= BLIZZARD_DEFAULT_PROFILE
+                and WoWKeybDB.profiles[selectedProfileName]
+                and WoWKeybDB.profiles[duplicateSourceName] then
+                duplicateBtn:Enable()
+            else
+                duplicateBtn:Disable()
+            end
+        end
     end
 
     local function refreshProfileSelector()
@@ -4346,6 +4803,7 @@ local function createSettingsPanel()
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
         refreshApplyButtonState()
+        refreshDuplicateSourceSelector()
 
         local mismatchCount = #mismatchLines
         local mismatchLinesToShow = {}
@@ -4377,10 +4835,110 @@ local function createSettingsPanel()
     panel.refreshProfileSelector = refreshProfileSelector
     refreshProfileSelector()
 
+    local newProfileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    newProfileLabel:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -10)
+    newProfileLabel:SetText("New:")
+
+    local newProfileEdit = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    newProfileEdit:SetSize(170, 24)
+    newProfileEdit:SetPoint("TOPLEFT", newProfileLabel, "BOTTOMLEFT", 0, -4)
+    newProfileEdit:SetAutoFocus(false)
+    newProfileEdit:SetMaxLetters(100)
+
+    createBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    createBtn:SetSize(70, 24)
+    createBtn:SetPoint("LEFT", newProfileEdit, "RIGHT", 8, 0)
+    createBtn:SetText("New")
+    createBtn:SetScript("OnClick", function()
+        local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if targetName == "" then
+            print("|cffff0000[WoWKeyb]|r New profile name cannot be empty.")
+            return
+        end
+        if targetName == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r That name is reserved.")
+            return
+        end
+        if WoWKeybDB.profiles[targetName] then
+            print("|cffff0000[WoWKeyb]|r A profile with that name already exists.")
+            return
+        end
+
+        WoWKeybDB.profiles[targetName] = buildDefaultProfileState(targetName, nil)
+        selectedProfileName = targetName
+        WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
+        WoWKeybDB.currentProfile = targetName
+        setPreferredProfileForCurrentContext(targetName)
+        syncProfileSnapshotFromGame(targetName)
+        newProfileEdit:SetText("")
+
+        print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName))
+        refreshProfileSelector()
+        refreshCurrentProfileText()
+    end)
+
+    local duplicateLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    duplicateLabel:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -10)
+    duplicateLabel:SetText("Copy From:")
+
+    duplicateDropdown = CreateFrame("Frame", "WoWKeybDuplicateProfileDropdown", panel, "UIDropDownMenuTemplate")
+    duplicateDropdown:SetPoint("TOPLEFT", duplicateLabel, "BOTTOMLEFT", -16, -4)
+    UIDropDownMenu_SetWidth(duplicateDropdown, 170)
+
+    duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    duplicateBtn:SetSize(70, 24)
+    duplicateBtn:SetPoint("LEFT", duplicateDropdown, "RIGHT", 8, 0)
+    duplicateBtn:SetText("Copy Profile")
+    duplicateBtn:SetScript("OnClick", function()
+        local destination = selectedProfileName
+        local source = duplicateSourceName
+        if not destination or destination == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Select a non-default destination profile first.")
+            return
+        end
+        if not source or source == "" then
+            print("|cffff0000[WoWKeyb]|r Select a source profile to copy.")
+            return
+        end
+        if source == destination then
+            print("|cffff0000[WoWKeyb]|r Source and destination profiles cannot be the same.")
+            return
+        end
+        local sourceProfile = WoWKeybDB.profiles[source]
+        if not sourceProfile then
+            print("|cffff0000[WoWKeyb]|r Source profile not found: " .. tostring(source))
+            return
+        end
+
+        local copiedProfile = deepCopy(sourceProfile)
+        copiedProfile.name = destination
+        WoWKeybDB.profiles[destination] = copiedProfile
+        print("|cff00ff00[WoWKeyb]|r Copied profile \"" .. tostring(source) .. "\" into \"" .. tostring(destination) .. "\".")
+        refreshProfileSelector()
+        refreshCurrentProfileText()
+    end)
+
+    resetBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    resetBtn:SetSize(248, 24)
+    resetBtn:SetPoint("TOPLEFT", duplicateDropdown, "BOTTOMLEFT", 16, -8)
+    resetBtn:SetText("Reset Profile")
+    resetBtn:SetScript("OnClick", function()
+        local target = selectedProfileName
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile.")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be reset.")
+            return
+        end
+        StaticPopup_Show("WOWKEYB_RESET_PROFILE_CONFIRM", target, nil, target)
+    end)
+
     applyBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     applyBtn:SetSize(180, 24)
-    applyBtn:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -10)
-    applyBtn:SetText("Apply Selected Profile")
+    applyBtn:SetPoint("TOPLEFT", resetBtn, "BOTTOMLEFT", 0, -10)
+    applyBtn:SetText("Apply Profile")
     applyBtn:SetScript("OnClick", function()
         local target = selectedProfileName or BLIZZARD_DEFAULT_PROFILE
         if not target then
@@ -4447,12 +5005,12 @@ local function createSettingsPanel()
     local renameBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     renameBtn:SetSize(180, 24)
     renameBtn:SetPoint("TOPLEFT", viewerBtn, "BOTTOMLEFT", 0, -8)
-    renameBtn:SetText("Rename Selected Profile")
+    renameBtn:SetText("Rename Profile")
 
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
     deleteBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
-    deleteBtn:SetText("Delete Selected Profile")
+    deleteBtn:SetText("Delete Profile")
 
     local function renameProfileByName(oldName, newName)
         local sourceName = tostring(oldName or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -4623,11 +5181,41 @@ local function createSettingsPanel()
         StaticPopup_Show("WOWKEYB_DELETE_PROFILE_CONFIRM", target, nil, target)
     end)
 
+    if not StaticPopupDialogs["WOWKEYB_RESET_PROFILE_CONFIRM"] then
+        StaticPopupDialogs["WOWKEYB_RESET_PROFILE_CONFIRM"] = {
+            text = "Reset selected WoWKeyb profile \"%s\" to defaults?",
+            button1 = "Reset",
+            button2 = "Cancel",
+            OnAccept = function(_, data)
+                local target = tostring(data or "")
+                if target == "" or target == BLIZZARD_DEFAULT_PROFILE then
+                    return
+                end
+                local existing = WoWKeybDB.profiles[target]
+                if type(existing) ~= "table" then
+                    print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+                    return
+                end
+                WoWKeybDB.profiles[target] = buildDefaultProfileState(target, existing)
+                print("|cff00ff00[WoWKeyb]|r Reset profile: " .. tostring(target))
+                refreshProfileSelector()
+                refreshCurrentProfileText()
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+
+    refreshProfileSelector()
+    refreshCurrentProfileText()
+
     local helpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
     helpText:SetWidth(280)
     helpText:SetJustifyH("LEFT")
-    helpText:SetText("Tip: Selecting a profile only updates selection. Use Apply Selected Profile to apply a matching profile.")
+    helpText:SetText("Tip: Selecting a profile only changes selection. Use Apply Profile to apply a matching profile.")
 
     local applyLogCheckbox = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
     applyLogCheckbox:SetPoint("TOPLEFT", helpText, "BOTTOMLEFT", -2, -10)
