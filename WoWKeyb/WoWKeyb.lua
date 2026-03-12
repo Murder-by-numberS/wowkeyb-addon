@@ -1345,6 +1345,8 @@ local function extractMacroPayload(spell, macroLookup)
     local isMacro = spell.isMacro == true or actionType == "macro"
     local spellIdRaw = tostring(spell.spellId or spell.spell_id or "")
     local macroId = tostring(spell.macroId or spell.macro_id or "")
+    local sourceSpellId = tostring(spell.sourceSpellId or spell.source_spell_id or "")
+    local sourceSpellName = tostring(spell.sourceSpellName or spell.source_spell_name or "")
     if macroId == "" then
         local fromSpellId = spellIdRaw:match("^macro:(.+)$")
         if fromSpellId and fromSpellId ~= "" then
@@ -1356,11 +1358,18 @@ local function extractMacroPayload(spell, macroLookup)
         isMacro = true
     end
 
+    local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
+    if (macroId ~= "")
+        or (type(macroText) == "string" and macroText:trim() ~= "")
+        or (type(sourceSpellId) == "string" and sourceSpellId ~= "")
+        or (type(sourceSpellName) == "string" and sourceSpellName ~= "") then
+        isMacro = true
+    end
+
     if not isMacro then
         return nil
     end
 
-    local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
     if (not macroText or tostring(macroText):trim() == "") then
         -- Legacy/partial payload fallback: some exports only carried macro text in description.
         local desc = spell.description
@@ -1401,6 +1410,8 @@ local function extractMacroPayload(spell, macroLookup)
         body = macroBody,
         source = payloadSource,
         icon = spell.icon,
+        sourceSpellId = sourceSpellId,
+        sourceSpellName = sourceSpellName,
     }
 end
 
@@ -3419,6 +3430,8 @@ local function buildViewerData(profile)
             source = tostring(macroPayload.source or "spell"),
             icon = tostring(macroPayload.icon or ""),
             body = tostring(macroPayload.body or ""),
+            sourceSpellId = tostring(macroPayload.sourceSpellId or ""),
+            sourceSpellName = tostring(macroPayload.sourceSpellName or ""),
             usages = {},
         }
         macroBySignature[signature] = entry
@@ -3538,6 +3551,52 @@ local function buildViewerData(profile)
         return nil
     end
 
+    local function resolveViewerMacroDisplay(spell, macroPayload)
+        if type(macroPayload) ~= "table" then
+            return "", nil
+        end
+
+        local displayName = tostring((spell and spell.name) or macroPayload.name or "")
+        local normalized = displayName:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        local needsNameLookup = (normalized == "" or normalized == "macro")
+        local resolvedIcon = resolveViewerMacroIcon(spell, macroPayload)
+
+        local macroId = tonumber(macroPayload.macroId or (spell and spell.macroId) or (spell and spell.macro_id) or "")
+        if needsNameLookup and macroId and macroId > 0 and type(GetMacroInfo) == "function" then
+            local macroName, macroIcon = GetMacroInfo(macroId)
+            if macroName and tostring(macroName) ~= "" then
+                displayName = tostring(macroName)
+                needsNameLookup = false
+            end
+            if (not resolvedIcon or tostring(resolvedIcon) == "") and macroIcon and tostring(macroIcon) ~= "" then
+                resolvedIcon = macroIcon
+            end
+        end
+
+        if (needsNameLookup or not resolvedIcon or tostring(resolvedIcon) == "")
+            and type(GetMacroIndexByName) == "function" then
+            local lookupName = tostring(macroPayload.name or displayName or "")
+            if lookupName ~= "" then
+                local byName = GetMacroIndexByName(lookupName)
+                if byName and tonumber(byName) and tonumber(byName) > 0 and type(GetMacroInfo) == "function" then
+                    local macroName, macroIcon = GetMacroInfo(tonumber(byName))
+                    if needsNameLookup and macroName and tostring(macroName) ~= "" then
+                        displayName = tostring(macroName)
+                        needsNameLookup = false
+                    end
+                    if (not resolvedIcon or tostring(resolvedIcon) == "") and macroIcon and tostring(macroIcon) ~= "" then
+                        resolvedIcon = macroIcon
+                    end
+                end
+            end
+        end
+
+        if displayName == "" then
+            displayName = tostring(macroPayload.name or "Macro")
+        end
+        return displayName, resolvedIcon
+    end
+
     local function viewerBaseKey(key)
         local k = normalizeKey(key)
         if not k or k == "" then return nil end
@@ -3617,6 +3676,15 @@ local function buildViewerData(profile)
                 end
             end
             local spellIcon = (macroPayload and resolveViewerMacroIcon(spell, macroPayload)) or resolveViewerSpellIcon(spell)
+            if macroPayload then
+                local macroDisplayName, macroDisplayIcon = resolveViewerMacroDisplay(spell, macroPayload)
+                if macroDisplayName and macroDisplayName ~= "" then
+                    spellName = macroDisplayName
+                end
+                if (not spellIcon or tostring(spellIcon) == "") and macroDisplayIcon and tostring(macroDisplayIcon) ~= "" then
+                    spellIcon = macroDisplayIcon
+                end
+            end
             if macroPayload then
                 macroPayload.icon = spellIcon or macroPayload.icon
                 local macroEntry = ensureMacroEntry(macroPayload)
@@ -3776,6 +3844,30 @@ local function buildViewerData(profile)
                 }, macroIndex)
                 if fallbackIcon and tostring(fallbackIcon) ~= "" then
                     macroEntry.icon = tostring(fallbackIcon)
+                end
+            end
+            if tostring(macroEntry.icon or "") == "" then
+                local sourceSpellId = tonumber(macroEntry.sourceSpellId or "")
+                local sourceSpellName = tostring(macroEntry.sourceSpellName or "")
+                if sourceSpellId and sourceSpellId > 0 then
+                    if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+                        local okTex, tex = pcall(C_Spell.GetSpellTexture, sourceSpellId)
+                        if okTex and tex and tostring(tex) ~= "" then
+                            macroEntry.icon = tostring(tex)
+                        end
+                    end
+                    if tostring(macroEntry.icon or "") == "" and _G.GetSpellInfo then
+                        local _, _, tex = _G.GetSpellInfo(sourceSpellId)
+                        if tex and tostring(tex) ~= "" then
+                            macroEntry.icon = tostring(tex)
+                        end
+                    end
+                end
+                if tostring(macroEntry.icon or "") == "" and sourceSpellName ~= "" and _G.GetSpellInfo then
+                    local _, _, tex = _G.GetSpellInfo(sourceSpellName)
+                    if tex and tostring(tex) ~= "" then
+                        macroEntry.icon = tostring(tex)
+                    end
                 end
             end
         end
