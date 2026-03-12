@@ -3746,6 +3746,41 @@ local function buildViewerData(profile)
         return an < bn
     end)
 
+    for _, macroEntry in ipairs(macroEntries) do
+        if type(macroEntry) == "table" and tostring(macroEntry.icon or "") == "" then
+            local macroIndex = nil
+            local macroId = tonumber(macroEntry.macroId or "")
+            if macroId and macroId > 0 and type(GetMacroInfo) == "function" then
+                local _, macroIcon = GetMacroInfo(macroId)
+                if macroIcon and tostring(macroIcon) ~= "" then
+                    macroEntry.icon = tostring(macroIcon)
+                    macroIndex = macroId
+                end
+            end
+            if (not macroIndex) and type(GetMacroIndexByName) == "function" then
+                local byName = GetMacroIndexByName(tostring(macroEntry.name or ""))
+                if byName and tonumber(byName) and tonumber(byName) > 0 then
+                    macroIndex = tonumber(byName)
+                    if type(GetMacroInfo) == "function" then
+                        local _, macroIcon = GetMacroInfo(macroIndex)
+                        if macroIcon and tostring(macroIcon) ~= "" then
+                            macroEntry.icon = tostring(macroIcon)
+                        end
+                    end
+                end
+            end
+            if tostring(macroEntry.icon or "") == "" then
+                local fallbackIcon = resolveMacroIconForPayload({
+                    body = tostring(macroEntry.body or ""),
+                    icon = macroEntry.icon,
+                }, macroIndex)
+                if fallbackIcon and tostring(fallbackIcon) ~= "" then
+                    macroEntry.icon = tostring(fallbackIcon)
+                end
+            end
+        end
+    end
+
     return keyToEntries, slotData, macroEntries
 end
 
@@ -3780,6 +3815,95 @@ local function setBarViewerCell(cell, key, spellName, icon)
     else
         cell.icon:SetTexture(nil)
         cell.icon:Hide()
+    end
+end
+
+local function readLiveViewerBarSlot(slot)
+    if not slot or slot < 1 or slot > 60 then
+        return nil
+    end
+    local actionSlot = toBlizzardActionSlot(slot)
+    local actionType, actionId = GetActionInfo(actionSlot)
+    if not actionType then
+        return nil
+    end
+
+    if actionType == "spell" then
+        local spell = readSpellFromActionSlot(actionSlot)
+        if spell then
+            return {
+                spellName = tostring(spell.name or "(no spell)"),
+                icon = spell.icon,
+            }
+        end
+    elseif actionType == "macro" then
+        local macro = readMacroFromActionSlot(actionSlot)
+        if macro then
+            return {
+                spellName = tostring(macro.name or "Macro"),
+                icon = macro.icon,
+            }
+        end
+        if actionId and type(GetMacroInfo) == "function" then
+            local macroName, macroIcon = GetMacroInfo(actionId)
+            return {
+                spellName = tostring(macroName or "Macro"),
+                icon = macroIcon,
+            }
+        end
+    else
+        local texture = GetActionTexture and GetActionTexture(actionSlot) or nil
+        local actionText = GetActionText and GetActionText(actionSlot) or nil
+        local fallbackName = tostring(actionText or actionType or "(no spell)")
+        if texture then
+            return {
+                spellName = fallbackName,
+                icon = texture,
+            }
+        end
+    end
+
+    return nil
+end
+
+local function overlayLiveViewerBarData(profile, slotData)
+    if type(slotData) ~= "table" then
+        return
+    end
+    local bars = profile and profile.layout and profile.layout.bars or {}
+
+    for slot = 1, 60 do
+        local live = readLiveViewerBarSlot(slot)
+        local existing = slotData[slot] or { key = "", spellName = "-", icon = nil }
+        local keyValue = tostring(existing.key or "")
+        if keyValue == "" then
+            local barIdx = math.floor((slot - 1) / 12) + 1
+            local slotIdx = ((slot - 1) % 12) + 1
+            local bar = bars[barIdx]
+            local layoutKey = (bar and bar.slotKeys and bar.slotKeys[slotIdx]) or ""
+            if layoutKey ~= "" then
+                keyValue = tostring(layoutKey)
+            else
+                local command = SLOT_COMMANDS[slot]
+                if command then
+                    keyValue = wowBindingToProfileKey(firstBindingForCommand(command))
+                end
+            end
+        end
+
+        if live then
+            slotData[slot] = {
+                key = keyValue,
+                spellName = tostring(live.spellName or "-"),
+                icon = live.icon,
+            }
+        else
+            slotData[slot] = {
+                key = keyValue,
+                spellName = "-",
+                icon = nil,
+            }
+        end
     end
 end
 
@@ -3847,7 +3971,8 @@ local function setMacroViewerCell(cell, macro)
     if icon == "" then
         icon = "INV_MISC_QUESTIONMARK"
     end
-    cell.icon:SetTexture(icon)
+    local textureRef = tonumber(icon) or icon
+    cell.icon:SetTexture(textureRef)
     cell.icon:Show()
     local usageCount = type(macro.usages) == "table" and #macro.usages or 0
     if usageCount > 0 then
@@ -3953,6 +4078,9 @@ local function refreshViewerFrame(frame)
     ))
 
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
+    if canRefreshViewerFromGame(frame.profileName) then
+        overlayLiveViewerBarData(profile, slotData)
+    end
 
     if frame.refreshBtn then
         if canRefreshViewerFromGame(frame.profileName) then
