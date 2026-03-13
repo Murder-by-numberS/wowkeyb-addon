@@ -5579,14 +5579,10 @@ local function createSettingsPanel()
         refreshCurrentProfileText()
     end)
 
-    local duplicateLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    duplicateLabel:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -10)
-    duplicateLabel:SetText("Copy selected profile:")
-
     duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    duplicateBtn:SetSize(120, 24)
-    duplicateBtn:SetPoint("TOPLEFT", duplicateLabel, "BOTTOMLEFT", 0, -4)
-    duplicateBtn:SetText("Copy")
+    duplicateBtn:SetSize(180, 24)
+    duplicateBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -12)
+    duplicateBtn:SetText("Copy Profile")
     duplicateBtn:SetScript("OnClick", function()
         local source = selectedProfileName or WoWKeybDB.currentProfile
         if not source or source == "" then
@@ -5702,9 +5698,12 @@ local function createSettingsPanel()
     renameBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
     renameBtn:SetText("Rename Profile")
 
+    duplicateBtn:ClearAllPoints()
+    duplicateBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
+
     local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetPoint("TOPLEFT", duplicateBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Profile")
 
     resetBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
