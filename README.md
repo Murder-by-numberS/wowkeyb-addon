@@ -21,17 +21,38 @@ World of Warcraft addon for applying keybinding profiles from [WoWKeyb](https://
 
 ## Usage
 
+### Bidirectional Sync Checklist (Web <-> Addon)
+
+Both directions use the same `WK1:` share code format.
+
+#### Web -> Addon (apply in game)
+
+1. In [WoWKeyb](https://wowkeyb.gg), open a keybinding profile.
+2. Click **Export for Addon** (copies a `WK1:...` code).
+3. In WoW addon settings, click **Import Profile** (or run `/wowkeyb import <name>`).
+4. Paste the `WK1:...` code and import.
+5. Click **Apply Profile**.
+6. Confirm in chat/apply summary that keybindings were applied and macros were created/reused.
+
+#### Addon -> Web (store in wowkeyb.gg)
+
+1. In WoW addon settings, select a profile and click **Export Selected Profile**.
+2. Copy the generated `WK1:...` code.
+3. In [WoWKeyb](https://wowkeyb.gg), open **Import from Addon**.
+4. Paste the code and import.
+5. If a name conflict exists, choose **Update** or **Create Copy**.
+
 ### Export from WoWKeyb
 
 1. Go to [WoWKeyb](https://wowkeyb.gg) and open a keybinding profile
-2. Click **Export for Addon** – the profile JSON is copied to your clipboard
+2. Click **Export for Addon** – a `WK1:...` profile code is copied to your clipboard
 
 ### Import in WoW
 
 1. Log in to a character (must be out of combat)
 2. Type: `/wowkeyb import YourProfileName` (e.g. `FrostMage`, `MyWarrior`)
 3. Press Enter – an import dialog opens
-4. Paste the JSON (Ctrl+V) and click **Import**
+4. Paste the `WK1:...` code (Ctrl+V) and click **Import**
 
 ### Apply the Profile
 

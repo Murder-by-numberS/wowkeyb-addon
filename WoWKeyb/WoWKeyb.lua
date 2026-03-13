@@ -2520,6 +2520,11 @@ applyProfile = function(profile)
 
     local applied = 0
     local skipped = 0
+    local macroAssignments = 0
+    local macroCreated = 0
+    local macroReused = 0
+    local macroFailed = 0
+    local macroPlaced = 0
     local macroParseCache = {}
     local debugApplySlots = WoWKeybDB.debugApplySlots == true
     local debugApplyAssignments = WoWKeybDB.debugApplyAssignments == true
@@ -2588,6 +2593,7 @@ applyProfile = function(profile)
 
                 -- 1. Place spell on action bar (default WoW UI)
                 if macroPayload then
+                    macroAssignments = macroAssignments + 1
                     if debugApplyAssignments or debugApplySlots then
                         local accountDiag = getMacroAccountMatchDiagnostics(macroPayload)
                         addonChat("|cffffcc00[WoWKeyb]|r [macro-account] slot=" .. tostring(slot)
@@ -2599,6 +2605,13 @@ applyProfile = function(profile)
                     end
                     local macroIndex, ensureReason = ensureMacroForPayload(macroPayload)
                     macroResult = ensureReason or "unknown"
+                    if ensureReason == "created" then
+                        macroCreated = macroCreated + 1
+                    elseif ensureReason and tostring(ensureReason):find("^reused%-existing") then
+                        macroReused = macroReused + 1
+                    elseif not macroIndex then
+                        macroFailed = macroFailed + 1
+                    end
                     if debugApplyAssignments or debugApplySlots then
                         addonChat("|cffffcc00[WoWKeyb]|r [macro-ensure] slot=" .. tostring(slot)
                             .. " blizzSlot=" .. tostring(actionSlot)
@@ -2642,6 +2655,7 @@ applyProfile = function(profile)
                             ClearCursor()
                             placeResult = "placed"
                             placeReason = "macro-" .. tostring(ensureReason or "ready")
+                            macroPlaced = macroPlaced + 1
                             if debugApplyAssignments or debugApplySlots then
                                 addonChat("|cffffcc00[WoWKeyb]|r [macro-place] slot=" .. tostring(slot)
                                     .. " blizzSlot=" .. tostring(actionSlot)
@@ -2836,7 +2850,18 @@ applyProfile = function(profile)
     end
 
     WoWKeyb.isApplyingProfile = false
-    return true, string.format("Applied %d keybindings (%d skipped) [mode: blizzard]", applied, skipped)
+    local summary = string.format("Applied %d keybindings (%d skipped) [mode: blizzard]", applied, skipped)
+    if macroAssignments > 0 then
+        summary = summary .. string.format(
+            " | Macros: %d assigned, %d placed, %d created, %d reused, %d failed",
+            macroAssignments,
+            macroPlaced,
+            macroCreated,
+            macroReused,
+            macroFailed
+        )
+    end
+    return true, summary
 end
 
 -- Toggle between current and previous profile
@@ -2919,7 +2944,6 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
     local matchingProfiles = listStoredProfiles(true)
     local target = BLIZZARD_DEFAULT_PROFILE
     local targetReason = "default"
-    local targetCreated = false
 
     if #matchingProfiles > 0 then
         local preferred = getPreferredProfileForCurrentContext()
@@ -2945,29 +2969,12 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
             target = matchingProfiles[1]
             targetReason = "first_match"
         end
-    else
-        local createdName = createProfileFromCurrentGameContext()
-        if createdName and createdName ~= "" then
-            target = createdName
-            targetReason = "auto_created"
-            targetCreated = true
-        end
     end
 
     if target == current then
         if target ~= BLIZZARD_DEFAULT_PROFILE then
             setPreferredProfileForCurrentContext(target)
         end
-        return
-    end
-
-    if targetCreated then
-        if WoWKeybDB.currentProfile ~= target then
-            WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-            WoWKeybDB.currentProfile = target
-        end
-        setPreferredProfileForCurrentContext(target)
-        print("|cff00ff00[WoWKeyb]|r Auto-created profile for current class/spec/hero: " .. tostring(target))
         return
     end
 
@@ -5884,6 +5891,10 @@ local function createSettingsPanel()
     applyLogCheckbox:SetScript("OnClick", function(self)
         WoWKeybDB.debugApplyAssignments = self:GetChecked() and true or false
     end)
+
+    -- Final spacing pass: keep New/Copy controls below help/debug controls.
+    newProfileLabel:ClearAllPoints()
+    newProfileLabel:SetPoint("TOPLEFT", applyLogCheckbox, "BOTTOMLEFT", 2, -12)
 
     WoWKeyb.optionsPanel = panel
 
