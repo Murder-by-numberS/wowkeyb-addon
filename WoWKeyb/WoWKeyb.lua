@@ -181,6 +181,83 @@ local function normalizeClassName(value)
     return normalized
 end
 
+local function formatClassLabel(classValue)
+    local raw = tostring(classValue or "")
+    if raw == "" then
+        return "Unknown"
+    end
+    local token = raw:upper()
+    if _G.LOCALIZED_CLASS_NAMES_MALE and _G.LOCALIZED_CLASS_NAMES_MALE[token] then
+        return tostring(_G.LOCALIZED_CLASS_NAMES_MALE[token])
+    end
+    if _G.LOCALIZED_CLASS_NAMES_FEMALE and _G.LOCALIZED_CLASS_NAMES_FEMALE[token] then
+        return tostring(_G.LOCALIZED_CLASS_NAMES_FEMALE[token])
+    end
+    if token == raw then
+        local lowered = raw:lower()
+        return lowered:gsub("(%a)([%w_]*)", function(first, rest)
+            return string.upper(first) .. tostring(rest or "")
+        end)
+    end
+    return raw
+end
+
+local function resolveHeroTalentNameFromId(heroId)
+    local idNum = tonumber(heroId)
+    if not idNum or idNum <= 0 then
+        return ""
+    end
+
+    if C_ClassTalents and type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
+        local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, idNum)
+        if okInfo and type(heroInfo) == "table" then
+            local heroName = tostring(heroInfo.name or heroInfo.heroTalentName or "")
+            if heroName ~= "" then
+                return heroName
+            end
+        end
+    end
+
+    local configId = nil
+    if C_ClassTalents and type(C_ClassTalents.GetActiveConfigID) == "function" then
+        local okConfig, activeConfigId = pcall(C_ClassTalents.GetActiveConfigID)
+        if okConfig and activeConfigId then
+            configId = activeConfigId
+        end
+    end
+    if configId and C_Traits and type(C_Traits.GetSubTreeInfo) == "function" then
+        local okSubTree, subTreeInfo = pcall(C_Traits.GetSubTreeInfo, configId, idNum)
+        if okSubTree and type(subTreeInfo) == "table" then
+            local heroName = tostring(subTreeInfo.name or subTreeInfo.description or "")
+            if heroName ~= "" then
+                return heroName
+            end
+        end
+    end
+
+    return ""
+end
+
+local function formatHeroTalentLabel(heroValue, heroIdValue)
+    local value = tostring(heroValue or "")
+    local idValue = tostring(heroIdValue or "")
+    local valueLooksNumeric = value ~= "" and value:match("^%d+$") ~= nil
+    if value ~= "" and not valueLooksNumeric then
+        return value
+    end
+
+    local idCandidate = idValue ~= "" and idValue or value
+    if idCandidate ~= "" then
+        local resolved = resolveHeroTalentNameFromId(idCandidate)
+        if resolved ~= "" then
+            return resolved
+        end
+        return tostring(idCandidate)
+    end
+
+    return "-"
+end
+
 local function addUniqueLabel(list, seen, value)
     if value == nil then return end
     local str = tostring(value)
@@ -483,9 +560,12 @@ local function getProfileContextSummary(profile)
     if type(profile) ~= "table" then
         return "Unknown / - / -"
     end
-    local classValue = tostring(profile.class or "Unknown")
+    local classValue = formatClassLabel(profile.class)
     local specValue = tostring(profile.spec or profile.spec_id or profile.specId or profile.specialization or "-")
-    local heroValue = tostring(profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId or "-")
+    local heroValue = formatHeroTalentLabel(
+        profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId,
+        profile.heroTalentId or profile.hero_talent_id
+    )
     return string.format("%s / %s / %s", classValue, specValue, heroValue)
 end
 
@@ -1083,8 +1163,11 @@ local function readMacroFromActionSlot(slot)
     local macroName, macroIcon, macroBody = GetMacroInfo(actionId)
     local macroId = tostring(actionId or "")
     local macroText = tostring(macroBody or "")
-    if macroText == "" then
-        return nil
+    if (not macroIcon or tostring(macroIcon) == "" or tostring(macroIcon) == "0") and type(GetActionTexture) == "function" then
+        local actionTexture = GetActionTexture(slot)
+        if actionTexture and tostring(actionTexture) ~= "" and tostring(actionTexture) ~= "0" then
+            macroIcon = actionTexture
+        end
     end
 
     return {
@@ -1096,6 +1179,70 @@ local function readMacroFromActionSlot(slot)
         macroId = macroId,
         macroText = macroText,
     }
+end
+
+local function resolveMacroDisplayFromActionSlot(actionSlot, actionId, fallbackName, fallbackIcon, fallbackBody)
+    local name = tostring(fallbackName or "")
+    local icon = fallbackIcon
+    local body = tostring(fallbackBody or "")
+
+    local function iconIsUsable(value)
+        if not value then return false end
+        local raw = tostring(value)
+        if raw == "" or raw == "0" then return false end
+        if raw:lower():find("^https?://") then return false end
+        return true
+    end
+
+    if actionId and type(GetMacroInfo) == "function" then
+        local macroName, macroIcon, macroBody = GetMacroInfo(actionId)
+        if macroName and tostring(macroName) ~= "" then
+            name = tostring(macroName)
+        end
+        if iconIsUsable(macroIcon) then
+            icon = macroIcon
+        end
+        if macroBody and tostring(macroBody) ~= "" then
+            body = tostring(macroBody)
+        end
+    end
+
+    -- If action payload only says "Macro", try to resolve by a better name token.
+    local normalizedName = normalizeSpellText(name)
+    if (normalizedName == "" or normalizedName == "macro") and actionSlot and type(GetActionText) == "function" then
+        local actionText = tostring(GetActionText(actionSlot) or "")
+        if actionText ~= "" then
+            normalizedName = normalizeSpellText(actionText)
+            name = actionText
+        end
+    end
+
+    if (not iconIsUsable(icon)) and actionSlot and type(GetActionTexture) == "function" then
+        local actionTexture = GetActionTexture(actionSlot)
+        if iconIsUsable(actionTexture) then
+            icon = actionTexture
+        end
+    end
+
+    -- Last resort: search the macro list by resolved name.
+    if (not iconIsUsable(icon)) and normalizedName ~= "" and normalizedName ~= "macro"
+        and type(GetMacroIndexByName) == "function" and type(GetMacroInfo) == "function" then
+        local macroIndex = GetMacroIndexByName(name)
+        if macroIndex and tonumber(macroIndex) and tonumber(macroIndex) > 0 then
+            local _, macroIcon, macroBody = GetMacroInfo(tonumber(macroIndex))
+            if iconIsUsable(macroIcon) then
+                icon = macroIcon
+            end
+            if (not body or body == "") and macroBody and tostring(macroBody) ~= "" then
+                body = tostring(macroBody)
+            end
+        end
+    end
+
+    if name == "" then
+        name = "Macro"
+    end
+    return name, icon, body
 end
 
 local function normalizeSpellText(value)
@@ -1622,7 +1769,7 @@ local function syncProfileSpellsFromActionBars(profileName)
             if slot then
                 local currentSpell = keybind.spell or {}
                 local actionSlot = toBlizzardActionSlot(slot)
-                local actionType = GetActionInfo(actionSlot)
+                local actionType, actionId = GetActionInfo(actionSlot)
 
                 local function setSpellFromSlot(nextSpell)
                     local prevSpellId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
@@ -1685,7 +1832,22 @@ local function syncProfileSpellsFromActionBars(profileName)
                             sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
                         })
                     else
-                        setSpellFromSlot(nil)
+                        -- Keep macro identity even when body text is unavailable at snapshot time.
+                        local macroName, macroIcon = nil, nil
+                        if actionId and type(GetMacroInfo) == "function" then
+                            macroName, macroIcon = GetMacroInfo(actionId)
+                        end
+                        setSpellFromSlot({
+                            spellId = "macro:" .. tostring(actionId or ""),
+                            name = tostring(macroName or currentSpell.name or "WoWKeybMacro"),
+                            icon = macroIcon or currentSpell.icon or "",
+                            actionType = "macro",
+                            isMacro = true,
+                            macroId = tostring(actionId or currentSpell.macroId or currentSpell.macro_id or ""),
+                            macroText = tostring(currentSpell.macroText or currentSpell.macro_text or currentSpell.text or currentSpell.body or ""),
+                            sourceSpellId = currentSpell.sourceSpellId or currentSpell.source_spell_id or "",
+                            sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
+                        })
                     end
                 else
                     local barSpell = readSpellFromActionSlot(actionSlot)
@@ -1837,12 +1999,7 @@ local function syncProfileContextFromPlayer(profileName)
         local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
         if okHero and activeHeroId then
             heroIdValue = tostring(activeHeroId)
-            if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
-                local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, activeHeroId)
-                if okInfo and type(heroInfo) == "table" then
-                    heroNameValue = tostring(heroInfo.name or heroInfo.heroTalentName or "")
-                end
-            end
+            heroNameValue = resolveHeroTalentNameFromId(activeHeroId)
         end
     end
     local heroValue = heroNameValue ~= "" and heroNameValue or heroIdValue
@@ -1925,12 +2082,7 @@ local function createProfileFromCurrentGameContext()
         local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
         if okHero and activeHeroId then
             heroIdValue = tostring(activeHeroId)
-            if type(C_ClassTalents.GetHeroTalentSpecInfo) == "function" then
-                local okInfo, heroInfo = pcall(C_ClassTalents.GetHeroTalentSpecInfo, activeHeroId)
-                if okInfo and type(heroInfo) == "table" then
-                    heroNameValue = tostring(heroInfo.name or heroInfo.heroTalentName or "")
-                end
-            end
+            heroNameValue = resolveHeroTalentNameFromId(activeHeroId)
         end
     end
     local resolvedHeroName = heroNameValue ~= "" and heroNameValue or (heroIdValue ~= "" and heroIdValue or "No Hero")
@@ -3941,24 +4093,20 @@ local function readLiveViewerBarSlot(slot)
     elseif actionType == "macro" then
         local macro = readMacroFromActionSlot(actionSlot)
         if macro then
-            local macroName = tostring(macro.name or "")
-            if (macroName == "" or macroName:lower() == "macro") and actionId and type(GetMacroInfo) == "function" then
-                local resolvedName, resolvedIcon = GetMacroInfo(actionId)
-                if resolvedName and tostring(resolvedName) ~= "" then
-                    macroName = tostring(resolvedName)
-                end
-                if (not macro.icon or tostring(macro.icon) == "" or tostring(macro.icon) == "0")
-                    and resolvedIcon and tostring(resolvedIcon) ~= "" and tostring(resolvedIcon) ~= "0" then
-                    macro.icon = resolvedIcon
-                end
-            end
+            local macroName, macroIcon = resolveMacroDisplayFromActionSlot(
+                actionSlot,
+                actionId,
+                macro.name,
+                macro.icon,
+                macro.macroText
+            )
             return {
-                spellName = macroName ~= "" and macroName or "Macro",
-                icon = macro.icon,
+                spellName = macroName,
+                icon = macroIcon,
             }
         end
         if actionId and type(GetMacroInfo) == "function" then
-            local macroName, macroIcon = GetMacroInfo(actionId)
+            local macroName, macroIcon = resolveMacroDisplayFromActionSlot(actionSlot, actionId, nil, nil, nil)
             return {
                 spellName = tostring(macroName or "Macro"),
                 icon = macroIcon,
@@ -4133,7 +4281,14 @@ local function buildLiveMacroEntriesFromBars(slotData)
         local actionSlot = toBlizzardActionSlot(slot)
         local actionType, actionId = GetActionInfo(actionSlot)
         if actionType == "macro" and actionId and type(GetMacroInfo) == "function" then
-            local macroName, macroIcon, macroBody = GetMacroInfo(actionId)
+            local rawName, rawIcon, rawBody = GetMacroInfo(actionId)
+            local macroName, macroIcon, macroBody = resolveMacroDisplayFromActionSlot(
+                actionSlot,
+                actionId,
+                rawName,
+                rawIcon,
+                rawBody
+            )
             local keyLabel = tostring(slotData and slotData[slot] and slotData[slot].key or "")
             if keyLabel == "" then keyLabel = "-" end
             local usageLabel = string.format("%s (%s)", slotToBarSlotLabel(slot), keyLabel)
@@ -4286,9 +4441,12 @@ local function refreshViewerFrame(frame)
     frame.metaText:SetText(string.format(
         "Profile: %s    Class: %s    Spec: %s    Hero Talent: %s",
         tostring(profile.name or frame.profileName or "Unknown"),
-        tostring(profile.class or "Unknown"),
+        formatClassLabel(profile.class),
         tostring(profile.spec or "-"),
-        tostring(profile.heroTalent or "-")
+        formatHeroTalentLabel(
+            profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId,
+            profile.heroTalentId or profile.hero_talent_id
+        )
     ))
 
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
