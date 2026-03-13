@@ -5064,8 +5064,16 @@ local function createSettingsPanel()
     panel.refreshCurrentProfileText = refreshCurrentProfileText
     refreshCurrentProfileText()
 
+    local importBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    importBtn:SetSize(180, 24)
+    importBtn:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -8)
+    importBtn:SetText("Import Profile")
+    importBtn:SetScript("OnClick", function()
+        WoWKeyb:ShowImportDialog("ImportedProfile")
+    end)
+
     local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    profileLabel:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -18)
+    profileLabel:SetPoint("TOPLEFT", importBtn, "BOTTOMLEFT", 0, -18)
     profileLabel:SetText("Selected profile:")
 
     local profileDropdown = CreateFrame("Frame", "WoWKeybProfileDropdown", panel, "UIDropDownMenuTemplate")
@@ -5076,6 +5084,8 @@ local function createSettingsPanel()
     local duplicateBtn
     local resetBtn
     local duplicateDropdown
+    local selectedViewerBtn
+    local copyViewerBtn
     local duplicateSourceName = nil
 
     local profileStatusText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
@@ -5555,9 +5565,70 @@ local function createSettingsPanel()
         refreshCurrentProfileText()
     end)
 
+    selectedViewerBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    selectedViewerBtn:SetSize(180, 24)
+    selectedViewerBtn:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -8)
+    selectedViewerBtn:SetText("View Keybinding Map")
+    selectedViewerBtn:SetScript("OnClick", function()
+        local target = selectedProfileName or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile to view.")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default has no profile mapping to view.")
+            return
+        end
+        WoWKeyb:ShowKeybindingViewer(target)
+    end)
+
+    local exportBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    exportBtn:SetSize(180, 24)
+    exportBtn:SetPoint("TOPLEFT", selectedViewerBtn, "BOTTOMLEFT", 0, -8)
+    exportBtn:SetText("Export Selected Profile")
+    exportBtn:SetScript("OnClick", function()
+        local target = selectedProfileName or WoWKeybDB.currentProfile
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No selected profile to export.")
+            return
+        end
+        if target == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be exported.")
+            return
+        end
+        WoWKeyb:ShowExportDialog(target)
+    end)
+
+    local renameBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    renameBtn:SetSize(180, 24)
+    renameBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
+    renameBtn:SetText("Rename Profile")
+
+    local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    deleteBtn:SetSize(180, 24)
+    deleteBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
+    deleteBtn:SetText("Delete Profile")
+
+    copyViewerBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    copyViewerBtn:SetSize(180, 24)
+    copyViewerBtn:SetPoint("TOPLEFT", duplicateDropdown, "BOTTOMLEFT", 16, -8)
+    copyViewerBtn:SetText("View Keybinding Map")
+    copyViewerBtn:SetScript("OnClick", function()
+        local target = duplicateSourceName
+        if not target then
+            print("|cffff0000[WoWKeyb]|r No copy source profile selected.")
+            return
+        end
+        if not WoWKeybDB.profiles[target] then
+            print("|cffff0000[WoWKeyb]|r Copy source profile not found: " .. tostring(target))
+            return
+        end
+        WoWKeyb:ShowKeybindingViewer(target)
+    end)
+
     resetBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     resetBtn:SetSize(180, 24)
-    resetBtn:SetPoint("TOPLEFT", duplicateDropdown, "BOTTOMLEFT", 16, -8)
+    resetBtn:SetPoint("TOPLEFT", copyViewerBtn, "BOTTOMLEFT", 0, -8)
     resetBtn:SetText("Reset Profile")
     resetBtn:SetScript("OnClick", function()
         local target = selectedProfileName
@@ -5597,57 +5668,6 @@ local function createSettingsPanel()
     end)
     refreshApplyButtonState()
 
-    local importBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    importBtn:SetSize(180, 24)
-    importBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
-    importBtn:SetText("Import Profile")
-    importBtn:SetScript("OnClick", function()
-        WoWKeyb:ShowImportDialog("ImportedProfile")
-    end)
-
-    local exportBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    exportBtn:SetSize(180, 24)
-    exportBtn:SetPoint("TOPLEFT", importBtn, "BOTTOMLEFT", 0, -8)
-    exportBtn:SetText("Export Selected Profile")
-    exportBtn:SetScript("OnClick", function()
-        local target = selectedProfileName or WoWKeybDB.currentProfile
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No selected profile to export.")
-            return
-        end
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be exported.")
-            return
-        end
-        WoWKeyb:ShowExportDialog(target)
-    end)
-
-    local viewerBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    viewerBtn:SetSize(180, 24)
-    viewerBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
-    viewerBtn:SetText("View Keybinding Map")
-    viewerBtn:SetScript("OnClick", function()
-        local target = selectedProfileName or WoWKeybDB.currentProfile
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No selected profile to view.")
-            return
-        end
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Blizzard Default has no profile mapping to view.")
-            return
-        end
-        WoWKeyb:ShowKeybindingViewer(target)
-    end)
-
-    local renameBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    renameBtn:SetSize(180, 24)
-    renameBtn:SetPoint("TOPLEFT", viewerBtn, "BOTTOMLEFT", 0, -8)
-    renameBtn:SetText("Rename Profile")
-
-    local deleteBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    deleteBtn:SetSize(180, 24)
-    deleteBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
-    deleteBtn:SetText("Delete Profile")
 
     local function renameProfileByName(oldName, newName)
         local sourceName = tostring(oldName or ""):gsub("^%s+", ""):gsub("%s+$", "")
