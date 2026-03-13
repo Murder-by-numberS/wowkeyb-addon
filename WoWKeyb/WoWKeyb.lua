@@ -1451,6 +1451,7 @@ local function buildProfileMacroLookup(profile)
                 local payload = {
                     name = macroName,
                     body = tostring(macroBody),
+                    icon = tostring(macro.icon or ""),
                 }
                 if macroId ~= "" then
                     registerMacroId(macroId, payload)
@@ -1486,6 +1487,7 @@ local function extractMacroPayload(spell, macroLookup)
     end
 
     local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
+    local resolvedIcon = spell.icon
     if (macroId ~= "")
         or (type(macroText) == "string" and macroText:trim() ~= "")
         or (type(sourceSpellId) == "string" and sourceSpellId ~= "")
@@ -1511,6 +1513,10 @@ local function extractMacroPayload(spell, macroLookup)
         if macroId ~= "" and macroLookup.byId[macroId] then
             macroText = macroLookup.byId[macroId].body
             macroName = macroLookup.byId[macroId].name or macroName
+            if (not resolvedIcon or tostring(resolvedIcon) == "" or tostring(resolvedIcon) == "0")
+                and macroLookup.byId[macroId].icon and tostring(macroLookup.byId[macroId].icon) ~= "" then
+                resolvedIcon = macroLookup.byId[macroId].icon
+            end
             payloadSource = "profile-by-id"
         end
         if (not macroText or tostring(macroText):trim() == "") then
@@ -1518,6 +1524,10 @@ local function extractMacroPayload(spell, macroLookup)
             if normalizedName ~= "" and not isGenericMacroName(normalizedName) and macroLookup.byName[normalizedName] then
                 macroText = macroLookup.byName[normalizedName].body
                 macroName = macroLookup.byName[normalizedName].name or macroName
+                if (not resolvedIcon or tostring(resolvedIcon) == "" or tostring(resolvedIcon) == "0")
+                    and macroLookup.byName[normalizedName].icon and tostring(macroLookup.byName[normalizedName].icon) ~= "" then
+                    resolvedIcon = macroLookup.byName[normalizedName].icon
+                end
                 payloadSource = "profile-by-name"
             end
         end
@@ -1536,7 +1546,7 @@ local function extractMacroPayload(spell, macroLookup)
         name = sanitizeMacroName(macroName),
         body = macroBody,
         source = payloadSource,
-        icon = spell.icon,
+        icon = resolvedIcon,
         sourceSpellId = sourceSpellId,
         sourceSpellName = sourceSpellName,
     }
@@ -1849,6 +1859,61 @@ local function syncProfileSpellsFromActionBars(profileName)
             end
         end
     end
+
+    -- Persist a normalized macro catalog (including icons) for cross-character viewer/export use.
+    local macroById = {}
+    if type(profile.macros) == "table" then
+        for _, macro in ipairs(profile.macros) do
+            if type(macro) == "table" then
+                local existingId = tostring(macro.id or macro.macroId or macro.macro_id or "")
+                if existingId ~= "" then
+                    macroById[existingId] = {
+                        id = existingId,
+                        name = tostring(macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"),
+                        macroText = tostring(macro.macroText or macro.macro_text or macro.text or macro.body or ""),
+                        icon = tostring(macro.icon or ""),
+                        sourceSpellId = tostring(macro.sourceSpellId or macro.source_spell_id or ""),
+                        sourceSpellName = tostring(macro.sourceSpellName or macro.source_spell_name or ""),
+                    }
+                end
+            end
+        end
+    end
+    if type(profile.keybinds) == "table" then
+        for _, keybind in ipairs(profile.keybinds) do
+            local spell = keybind and keybind.spell
+            if type(spell) == "table" then
+                local spellIdRaw = tostring(spell.spellId or spell.spell_id or "")
+                local actionType = tostring(spell.actionType or spell.action_type or ""):lower()
+                local isMacro = spell.isMacro == true or actionType == "macro" or spellIdRaw:find("^macro:") ~= nil
+                if isMacro then
+                    local macroId = tostring(spell.macroId or spell.macro_id or spellIdRaw:match("^macro:(.+)$") or "")
+                    local macroText = tostring(spell.macroText or spell.macro_text or spell.text or spell.body or "")
+                    if macroId ~= "" then
+                        local existing = macroById[macroId] or {}
+                        macroById[macroId] = {
+                            id = macroId,
+                            name = tostring(spell.name or existing.name or "WoWKeybMacro"),
+                            macroText = macroText ~= "" and macroText or tostring(existing.macroText or ""),
+                            icon = tostring(spell.icon or existing.icon or ""),
+                            sourceSpellId = tostring(spell.sourceSpellId or spell.source_spell_id or existing.sourceSpellId or ""),
+                            sourceSpellName = tostring(spell.sourceSpellName or spell.source_spell_name or existing.sourceSpellName or ""),
+                        }
+                    end
+                end
+            end
+        end
+    end
+    local mergedMacros = {}
+    for _, macro in pairs(macroById) do
+        if type(macro) == "table" and tostring(macro.id or "") ~= "" then
+            mergedMacros[#mergedMacros + 1] = macro
+        end
+    end
+    table.sort(mergedMacros, function(a, b)
+        return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
+    end)
+    profile.macros = mergedMacros
 
     return true, changed
 end
@@ -3420,7 +3485,7 @@ local function serializeSyncedProfile(profileName, profile)
         if value == "" then return "" end
         return value
     end
-    local function collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName)
+    local function collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName, macroIcon)
         local id = normalizeMacroId(macroId)
         local text = tostring(macroText or "")
         if id == "" or text == "" then return end
@@ -3430,6 +3495,7 @@ local function serializeSyncedProfile(profileName, profile)
             '{"id":"', jsonEscape(id),
             '","name":"', jsonEscape(macroName or "WoWKeybMacro"),
             '","macroText":"', jsonEscape(text),
+            '","icon":"', jsonEscape(macroIcon or ""),
             '","sourceSpellId":"', jsonEscape(sourceSpellId or ""),
             '","sourceSpellName":"', jsonEscape(sourceSpellName or ""),
             '"}'
@@ -3468,7 +3534,7 @@ local function serializeSyncedProfile(profileName, profile)
         })
         table.insert(keybindChunks, kbJson)
         if isMacro and macroId ~= "" and macroText ~= "" then
-            collectMacro(macroId, spell.name or spell.macroName or "WoWKeybMacro", macroText, sourceSpellId, sourceSpellName)
+            collectMacro(macroId, spell.name or spell.macroName or "WoWKeybMacro", macroText, sourceSpellId, sourceSpellName, spell.icon)
         end
     end
 
@@ -3480,7 +3546,7 @@ local function serializeSyncedProfile(profileName, profile)
                 local macroName = macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"
                 local sourceSpellId = macro.sourceSpellId or macro.source_spell_id or ""
                 local sourceSpellName = macro.sourceSpellName or macro.source_spell_name or ""
-                collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName)
+                collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName, macro.icon)
             end
         end
     end
