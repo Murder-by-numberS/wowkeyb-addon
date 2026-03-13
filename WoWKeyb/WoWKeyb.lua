@@ -5614,21 +5614,51 @@ local function createSettingsPanel()
             if seed == "" then
                 seed = "Copied Profile"
             end
-            if not WoWKeybDB.profiles[seed] and seed ~= BLIZZARD_DEFAULT_PROFILE then
-                return seed
-            end
-            local index = 2
-            while true do
-                local candidate = string.format("%s (%d)", seed, index)
-                if not WoWKeybDB.profiles[candidate] and candidate ~= BLIZZARD_DEFAULT_PROFILE then
-                    return candidate
+
+            local copyRoot = seed
+            local rootWithIndex = seed:match("^(.-)%s%-%s[Cc]opy%s+%d+$")
+            if rootWithIndex then
+                copyRoot = tostring(rootWithIndex):gsub("%s+$", "")
+            else
+                local rootWithoutIndex = seed:match("^(.-)%s%-%s[Cc]opy$")
+                if rootWithoutIndex then
+                    copyRoot = tostring(rootWithoutIndex):gsub("%s+$", "")
                 end
-                index = index + 1
             end
+
+            if copyRoot == "" then
+                copyRoot = "Copied Profile"
+            end
+
+            local familyPrefix = copyRoot .. " - Copy"
+            local maxCopyIndex = 0
+            for profileName, _ in pairs(WoWKeybDB.profiles or {}) do
+                local existingName = tostring(profileName or "")
+                if existingName == familyPrefix then
+                    if maxCopyIndex < 1 then
+                        maxCopyIndex = 1
+                    end
+                elseif existingName:sub(1, #familyPrefix + 1) == (familyPrefix .. " ") then
+                    local suffix = existingName:sub(#familyPrefix + 2)
+                    local parsed = tonumber(suffix)
+                    if parsed and parsed > maxCopyIndex then
+                        maxCopyIndex = parsed
+                    end
+                end
+            end
+
+            local candidate = familyPrefix
+            if maxCopyIndex > 0 then
+                candidate = string.format("%s %d", familyPrefix, maxCopyIndex + 1)
+            end
+            if candidate == BLIZZARD_DEFAULT_PROFILE then
+                return candidate .. " 1"
+            end
+            return candidate
         end
 
         local copiedProfile = deepCopy(sourceProfile)
-        local newProfileName = buildUniqueCopiedProfileName(string.format("%s - Copy", tostring(source)))
+        local newProfileName = buildUniqueCopiedProfileName(tostring(source))
         copiedProfile.name = newProfileName
         WoWKeybDB.profiles[newProfileName] = copiedProfile
         selectedProfileName = newProfileName
