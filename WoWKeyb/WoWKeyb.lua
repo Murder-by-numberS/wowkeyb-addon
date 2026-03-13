@@ -3900,9 +3900,19 @@ local function setBarViewerCell(cell, key, spellName, icon)
     cell.spellText:SetText("")
     cell.viewerKey = cleanKey
     cell.viewerSpellName = (spellName and spellName ~= "") and spellName or "-"
-    cell.viewerIcon = icon
-    if icon and icon ~= "" then
-        cell.icon:SetTexture(icon)
+
+    local iconRef = nil
+    if icon and tostring(icon) ~= "" and tostring(icon) ~= "0" and not tostring(icon):lower():find("^https?://") then
+        local numeric = tonumber(icon)
+        if numeric and numeric > 0 then
+            iconRef = numeric
+        else
+            iconRef = icon
+        end
+    end
+    cell.viewerIcon = iconRef
+    if iconRef then
+        cell.icon:SetTexture(iconRef)
         cell.icon:Show()
     else
         cell.icon:SetTexture(nil)
@@ -3931,8 +3941,19 @@ local function readLiveViewerBarSlot(slot)
     elseif actionType == "macro" then
         local macro = readMacroFromActionSlot(actionSlot)
         if macro then
+            local macroName = tostring(macro.name or "")
+            if (macroName == "" or macroName:lower() == "macro") and actionId and type(GetMacroInfo) == "function" then
+                local resolvedName, resolvedIcon = GetMacroInfo(actionId)
+                if resolvedName and tostring(resolvedName) ~= "" then
+                    macroName = tostring(resolvedName)
+                end
+                if (not macro.icon or tostring(macro.icon) == "" or tostring(macro.icon) == "0")
+                    and resolvedIcon and tostring(resolvedIcon) ~= "" and tostring(resolvedIcon) ~= "0" then
+                    macro.icon = resolvedIcon
+                end
+            end
             return {
-                spellName = tostring(macro.name or "Macro"),
+                spellName = macroName ~= "" and macroName or "Macro",
                 icon = macro.icon,
             }
         end
@@ -4060,10 +4081,13 @@ local function setMacroViewerCell(cell, macro)
 
     cell.viewerMacro = macro
     local icon = tostring(macro.icon or "")
-    if icon == "" then
+    if icon == "" or icon == "0" or icon:lower():find("^https?://") then
         icon = "INV_MISC_QUESTIONMARK"
     end
-    local textureRef = tonumber(icon) or icon
+    local textureRef = tonumber(icon)
+    if not textureRef or textureRef <= 0 then
+        textureRef = icon
+    end
     cell.icon:SetTexture(textureRef)
     cell.icon:Show()
     local usageCount = type(macro.usages) == "table" and #macro.usages or 0
@@ -4150,6 +4174,26 @@ local function buildLiveMacroEntriesFromBars(slotData)
     return entries, bySignature
 end
 
+local function filterMacroEntriesForDisplay(entries)
+    if type(entries) ~= "table" then
+        return {}
+    end
+    local used = {}
+    local unused = {}
+    for _, entry in ipairs(entries) do
+        local usageCount = (type(entry) == "table" and type(entry.usages) == "table") and #entry.usages or 0
+        if usageCount > 0 then
+            used[#used + 1] = entry
+        else
+            unused[#unused + 1] = entry
+        end
+    end
+    if #used > 0 then
+        return used
+    end
+    return unused
+end
+
 local function showBarCellTooltip(cell)
     if not cell then return end
     local slot = cell.viewerSlot
@@ -4207,8 +4251,18 @@ local function setKeyboardViewerCell(cell, key, entries)
     cell.viewerEntries = list
     cell.keyText:SetText(cleanKey)
 
-    if first and first.icon and first.icon ~= "" then
-        cell.icon:SetTexture(first.icon)
+    local iconRef = nil
+    if first and first.icon and tostring(first.icon) ~= "" and tostring(first.icon) ~= "0"
+        and not tostring(first.icon):lower():find("^https?://") then
+        local numeric = tonumber(first.icon)
+        if numeric and numeric > 0 then
+            iconRef = numeric
+        else
+            iconRef = first.icon
+        end
+    end
+    if iconRef then
+        cell.icon:SetTexture(iconRef)
         cell.icon:Show()
     else
         cell.icon:SetTexture(nil)
@@ -4240,6 +4294,37 @@ local function refreshViewerFrame(frame)
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
     if canRefreshViewerFromGame(frame.profileName) then
         overlayLiveViewerBarData(profile, slotData)
+        keyToEntries = {}
+        for slot = 1, 60 do
+            local entry = slotData[slot]
+            if entry and entry.key and entry.key ~= "" then
+                local normalizedEntryKey = normalizeKey(entry.key)
+                local baseKey = normalizedEntryKey
+                local changed = true
+                while changed and baseKey and baseKey ~= "" do
+                    changed = false
+                    if baseKey:find("^SHIFT%-") then
+                        baseKey = baseKey:gsub("^SHIFT%-", "")
+                        changed = true
+                    elseif baseKey:find("^CTRL%-") then
+                        baseKey = baseKey:gsub("^CTRL%-", "")
+                        changed = true
+                    elseif baseKey:find("^ALT%-") then
+                        baseKey = baseKey:gsub("^ALT%-", "")
+                        changed = true
+                    end
+                end
+                if baseKey and baseKey ~= "" then
+                    keyToEntries[baseKey] = keyToEntries[baseKey] or {}
+                    table.insert(keyToEntries[baseKey], {
+                        key = tostring(entry.key or ""),
+                        spellName = tostring(entry.spellName or "-"),
+                        icon = entry.icon,
+                        slot = slot,
+                    })
+                end
+            end
+        end
         local liveMacroEntries, liveBySignature = buildLiveMacroEntriesFromBars(slotData)
         if #liveMacroEntries > 0 then
             for _, macro in ipairs(macroEntries or {}) do
@@ -4254,6 +4339,7 @@ local function refreshViewerFrame(frame)
             macroEntries = liveMacroEntries
         end
     end
+    macroEntries = filterMacroEntriesForDisplay(macroEntries)
 
     if frame.refreshBtn then
         if canRefreshViewerFromGame(frame.profileName) then
