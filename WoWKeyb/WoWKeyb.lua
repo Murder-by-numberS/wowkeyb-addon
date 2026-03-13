@@ -1207,35 +1207,10 @@ local function resolveMacroDisplayFromActionSlot(actionSlot, actionId, fallbackN
         end
     end
 
-    -- If action payload only says "Macro", try to resolve by a better name token.
-    local normalizedName = normalizeSpellText(name)
-    if (normalizedName == "" or normalizedName == "macro") and actionSlot and type(GetActionText) == "function" then
-        local actionText = tostring(GetActionText(actionSlot) or "")
-        if actionText ~= "" then
-            normalizedName = normalizeSpellText(actionText)
-            name = actionText
-        end
-    end
-
     if (not iconIsUsable(icon)) and actionSlot and type(GetActionTexture) == "function" then
         local actionTexture = GetActionTexture(actionSlot)
         if iconIsUsable(actionTexture) then
             icon = actionTexture
-        end
-    end
-
-    -- Last resort: search the macro list by resolved name.
-    if (not iconIsUsable(icon)) and normalizedName ~= "" and normalizedName ~= "macro"
-        and type(GetMacroIndexByName) == "function" and type(GetMacroInfo) == "function" then
-        local macroIndex = GetMacroIndexByName(name)
-        if macroIndex and tonumber(macroIndex) and tonumber(macroIndex) > 0 then
-            local _, macroIcon, macroBody = GetMacroInfo(tonumber(macroIndex))
-            if iconIsUsable(macroIcon) then
-                icon = macroIcon
-            end
-            if (not body or body == "") and macroBody and tostring(macroBody) ~= "" then
-                body = tostring(macroBody)
-            end
         end
     end
 
