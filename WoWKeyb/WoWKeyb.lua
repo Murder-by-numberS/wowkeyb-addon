@@ -5749,7 +5749,7 @@ local function createSettingsPanel()
 
     applyBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     applyBtn:SetSize(180, 24)
-    applyBtn:SetPoint("TOPLEFT", resetBtn, "BOTTOMLEFT", 0, -10)
+    applyBtn:SetPoint("TOPLEFT", selectedViewerBtn, "BOTTOMLEFT", 0, -8)
     applyBtn:SetText("Apply Profile")
     applyBtn:SetScript("OnClick", function()
         local target = selectedProfileName or BLIZZARD_DEFAULT_PROFILE
@@ -5770,6 +5770,8 @@ local function createSettingsPanel()
         refreshCurrentProfileText()
         refreshProfileSelector()
     end)
+    exportBtn:ClearAllPoints()
+    exportBtn:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -8)
     refreshApplyButtonState()
 
 
