@@ -5432,7 +5432,8 @@ local function createSettingsPanel()
     refreshProfileSelector()
 
     local newProfileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    newProfileLabel:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -10)
+    -- Keep New/Copy controls below selected-profile action buttons.
+    newProfileLabel:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -150)
     newProfileLabel:SetText("New:")
 
     local newProfileEdit = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
