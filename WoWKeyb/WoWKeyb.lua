@@ -5508,7 +5508,7 @@ local function createSettingsPanel()
 
     local duplicateLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     duplicateLabel:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -10)
-    duplicateLabel:SetText("Copy To:")
+    duplicateLabel:SetText("Copy:")
 
     duplicateDropdown = CreateFrame("Frame", "WoWKeybDuplicateProfileDropdown", panel, "UIDropDownMenuTemplate")
     duplicateDropdown:SetPoint("TOPLEFT", duplicateLabel, "BOTTOMLEFT", -16, -4)
@@ -5519,14 +5519,14 @@ local function createSettingsPanel()
     duplicateBtn:SetPoint("LEFT", duplicateDropdown, "RIGHT", 8, 0)
     duplicateBtn:SetText("Copy")
     duplicateBtn:SetScript("OnClick", function()
-        local source = selectedProfileName
-        local destination = duplicateSourceName
-        if not source or source == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Select a non-default source profile first.")
+        local destination = selectedProfileName
+        local source = duplicateSourceName
+        if not destination or destination == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Select a non-default profile to receive the copy.")
             return
         end
-        if not destination or destination == "" then
-            print("|cffff0000[WoWKeyb]|r Select a destination profile to receive the copy.")
+        if not source or source == "" then
+            print("|cffff0000[WoWKeyb]|r Select a profile to copy.")
             return
         end
         if source == destination then
@@ -5546,7 +5546,7 @@ local function createSettingsPanel()
         local copiedProfile = deepCopy(sourceProfile)
         copiedProfile.name = destination
         WoWKeybDB.profiles[destination] = copiedProfile
-        print("|cff00ff00[WoWKeyb]|r Copied selected profile \"" .. tostring(source) .. "\" into \"" .. tostring(destination) .. "\".")
+        print("|cff00ff00[WoWKeyb]|r Copied profile \"" .. tostring(source) .. "\" into \"" .. tostring(destination) .. "\".")
         refreshProfileSelector()
         refreshCurrentProfileText()
     end)
