@@ -1423,6 +1423,11 @@ local function normalizeMacroNameForMatch(rawName)
     return name
 end
 
+local function isGenericMacroName(rawName)
+    local normalized = normalizeMacroNameForMatch(rawName)
+    return normalized == "" or normalized == "macro" or normalized == "wowkeybmacro"
+end
+
 local function buildProfileMacroLookup(profile)
     local lookup = { byId = {}, byName = {} }
     local function registerMacroId(idValue, payload)
@@ -1451,7 +1456,7 @@ local function buildProfileMacroLookup(profile)
                     registerMacroId(macroId, payload)
                 end
                 local normalizedName = normalizeSpellText(macroName)
-                if normalizedName ~= "" then
+                if normalizedName ~= "" and not isGenericMacroName(normalizedName) then
                     lookup.byName[normalizedName] = payload
                 end
             end
@@ -1510,7 +1515,7 @@ local function extractMacroPayload(spell, macroLookup)
         end
         if (not macroText or tostring(macroText):trim() == "") then
             local normalizedName = normalizeSpellText(macroName)
-            if normalizedName ~= "" and macroLookup.byName[normalizedName] then
+            if normalizedName ~= "" and not isGenericMacroName(normalizedName) and macroLookup.byName[normalizedName] then
                 macroText = macroLookup.byName[normalizedName].body
                 macroName = macroLookup.byName[normalizedName].name or macroName
                 payloadSource = "profile-by-name"
@@ -1624,19 +1629,21 @@ local function ensureMacroForPayload(payload)
     if type(payload) ~= "table" or not payload.body or payload.body == "" then
         return nil, "missing-body"
     end
-    if type(GetMacroIndexByName) == "function" then
+    local existing = findExistingMacroByBody(payload.body)
+    if existing then
+        return existing, "reused-existing-body"
+    end
+    if not isGenericMacroName(payload.name) and type(GetMacroIndexByName) == "function" then
         local byApiName = GetMacroIndexByName(tostring(payload.name or ""))
         if byApiName and tonumber(byApiName) and tonumber(byApiName) > 0 then
             return tonumber(byApiName), "reused-existing-name-api"
         end
     end
-    local byName = findExistingMacroByName(payload.name)
-    if byName then
-        return byName, "reused-existing-name"
-    end
-    local existing = findExistingMacroByBody(payload.body)
-    if existing then
-        return existing, "reused-existing-body"
+    if not isGenericMacroName(payload.name) then
+        local byName = findExistingMacroByName(payload.name)
+        if byName then
+            return byName, "reused-existing-name"
+        end
     end
     if type(CreateMacro) ~= "function" then
         return nil, "create-macro-unavailable"
@@ -2557,15 +2564,6 @@ applyProfile = function(profile)
                             .. " byBody=" .. tostring(accountDiag.byBody or "-"))
                     end
                     local macroIndex, ensureReason = ensureMacroForPayload(macroPayload)
-                    if (not macroIndex) and type(GetMacroIndexByName) == "function" then
-                        local byName = GetMacroIndexByName(tostring(macroPayload.name or ""))
-                        if byName and tonumber(byName) and tonumber(byName) > 0 then
-                            macroIndex = tonumber(byName)
-                            if not ensureReason or ensureReason == "unknown" then
-                                ensureReason = "resolved-by-name"
-                            end
-                        end
-                    end
                     macroResult = ensureReason or "unknown"
                     if debugApplyAssignments or debugApplySlots then
                         addonChat("|cffffcc00[WoWKeyb]|r [macro-ensure] slot=" .. tostring(slot)
