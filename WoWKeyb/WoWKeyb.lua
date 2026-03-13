@@ -10,6 +10,7 @@ local BLIZZARD_DEFAULT_PROFILE = "Blizzard Default"
 local MINIMAP_LDB_NAME = "WoWKeyb"
 local SHARE_CODE_PREFIX = "WK1:"
 local ENABLE_LIVE_SLOT_SYNC = false
+local ENABLE_LIVE_PROFILE_SYNC = false
 local ADDON_SHARE_PREFIX = "WOWKEYB1"
 local SHARE_PROTOCOL_VERSION = "1"
 local SHARE_CHUNK_SIZE = 180
@@ -2062,13 +2063,44 @@ local function syncProfileContextFromPlayer(profileName)
     return true, changed
 end
 
+local canRefreshViewerFromGame
+
 local function syncProfileSnapshotFromGame(profileName)
     local targetName = profileName or WoWKeybDB.currentProfile
+    local snapshotAt = time()
+    local profile = getStoredProfile(targetName)
+    if type(profile) ~= "table" then
+        return {
+            contextOk = false,
+            contextChanged = 0,
+            spellsOk = false,
+            spellsChanged = 0,
+            layoutOk = false,
+            layoutChanged = 0,
+            snapshotAt = snapshotAt,
+            blocked = true,
+            blockedReason = "profile-not-found",
+        }
+    end
+
+    -- Never overwrite an off-context profile with live bars/bindings from another character/spec.
+    if not canRefreshViewerFromGame(targetName) then
+        return {
+            contextOk = false,
+            contextChanged = 0,
+            spellsOk = false,
+            spellsChanged = 0,
+            layoutOk = false,
+            layoutChanged = 0,
+            snapshotAt = snapshotAt,
+            blocked = true,
+            blockedReason = "inactive-or-context-mismatch",
+        }
+    end
+
     local contextOk, contextChanged = syncProfileContextFromPlayer(profileName)
     local spellsOk, spellsChanged = syncProfileSpellsFromActionBars(profileName)
     local layoutOk, layoutChanged = syncProfileLayoutKeysFromBindings(profileName)
-    local snapshotAt = time()
-    local profile = getStoredProfile(targetName)
     if type(profile) == "table" then
         profile.lastSnapshotAt = snapshotAt
     end
@@ -2083,12 +2115,28 @@ local function syncProfileSnapshotFromGame(profileName)
     }
 end
 
-local function canRefreshViewerFromGame(profileName)
+canRefreshViewerFromGame = function(profileName)
+    if not ENABLE_LIVE_PROFILE_SYNC then
+        return false
+    end
     local targetName = tostring(profileName or "")
     if targetName == "" or targetName == BLIZZARD_DEFAULT_PROFILE then
         return false
     end
-    return tostring(WoWKeybDB and WoWKeybDB.currentProfile or "") == targetName
+    if tostring(WoWKeybDB and WoWKeybDB.currentProfile or "") ~= targetName then
+        return false
+    end
+    local profile = getStoredProfile(targetName)
+    if type(profile) ~= "table" then
+        return false
+    end
+    if not profileMatchesCurrentClass(profile) then
+        return false
+    end
+    if not profileMatchesCurrentSpecAndHero(profile) then
+        return false
+    end
+    return true
 end
 
 local function buildUniqueAutoProfileName(baseName)
@@ -4728,7 +4776,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-        subtitle:SetText("Snapshot from live bars/bindings/macros. Use Refresh From Game before export.")
+        subtitle:SetText("Viewing stored WoWKeyb profile data (live syncing disabled).")
 
         local metaText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
@@ -4948,7 +4996,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 return
             end
             if not canRefreshViewerFromGame(targetProfile) then
-                print("|cffffcc00[WoWKeyb]|r Refresh From Game is only available for the active profile.")
+                print("|cffffcc00[WoWKeyb]|r Refresh From Game is only available for the active matching class/spec/hero profile.")
                 return
             end
             local syncResult = syncProfileSnapshotFromGame(targetProfile)
@@ -5007,11 +5055,22 @@ function WoWKeyb:ShowExportDialog(profileName)
         return
     end
 
-    -- Export should reflect current in-game bars/bindings/macros and player context
-    -- so users can round-trip from game -> addon export -> web import.
-    local syncResult = syncProfileSnapshotFromGame(profileName)
-    if not (syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) then
-        print("|cffffcc00[WoWKeyb]|r Export snapshot completed with partial sync; data may be incomplete for this profile.")
+    -- Export uses stored profile data when live syncing is disabled.
+    local syncResult = {
+        contextOk = true,
+        contextChanged = 0,
+        spellsOk = true,
+        spellsChanged = 0,
+        layoutOk = true,
+        layoutChanged = 0,
+    }
+    if canRefreshViewerFromGame(profileName) then
+        syncResult = syncProfileSnapshotFromGame(profileName)
+        if not (syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) then
+            print("|cffffcc00[WoWKeyb]|r Export snapshot completed with partial sync; data may be incomplete for this profile.")
+        end
+    else
+        print("|cffffcc00[WoWKeyb]|r Exporting stored profile data (live syncing disabled).")
     end
 
     local json, err = serializeSyncedProfile(profileName, profile)
@@ -5156,10 +5215,7 @@ local function createSettingsPanel()
     local createBtn
     local duplicateBtn
     local resetBtn
-    local duplicateDropdown
     local selectedViewerBtn
-    local copyViewerBtn
-    local duplicateSourceName = nil
 
     local profileStatusText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     profileStatusText:SetPoint("TOPLEFT", profileDropdown, "TOPRIGHT", 24, 20)
@@ -5319,48 +5375,6 @@ local function createSettingsPanel()
         }
     end
 
-    local function refreshDuplicateSourceSelector()
-        if not duplicateDropdown then return end
-        local candidates = {}
-        for name, _ in pairs(WoWKeybDB.profiles or {}) do
-            candidates[#candidates + 1] = name
-        end
-        table.sort(candidates)
-
-        local validSelection = false
-        for _, name in ipairs(candidates) do
-            if name == duplicateSourceName then
-                validSelection = true
-                break
-            end
-        end
-        if not validSelection then
-            duplicateSourceName = candidates[1]
-        end
-
-        UIDropDownMenu_Initialize(duplicateDropdown, function(self, level)
-            for _, name in ipairs(candidates) do
-                local info = UIDropDownMenu_CreateInfo()
-                info.text = tostring(name)
-                info.checked = (name == duplicateSourceName)
-                info.func = function()
-                    duplicateSourceName = name
-                    UIDropDownMenu_SetText(duplicateDropdown, name)
-                end
-                UIDropDownMenu_AddButton(info, level)
-            end
-        end)
-        UIDropDownMenu_SetText(duplicateDropdown, duplicateSourceName or "No source profile")
-
-        if duplicateBtn and duplicateBtn.Enable then
-            if duplicateSourceName and duplicateSourceName ~= "" and WoWKeybDB.profiles[duplicateSourceName] then
-                duplicateBtn:Enable()
-            else
-                duplicateBtn:Disable()
-            end
-        end
-    end
-
     local function refreshProfileSelector()
         local profiles = listStoredProfiles(false)
         local selectorOptions = { BLIZZARD_DEFAULT_PROFILE }
@@ -5472,7 +5486,6 @@ local function createSettingsPanel()
         end)
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
         refreshApplyButtonState()
-        refreshDuplicateSourceSelector()
 
         local mismatchCount = #mismatchLines
         local mismatchLinesToShow = {}
@@ -5558,26 +5571,7 @@ local function createSettingsPanel()
             print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
             return
         end
-        syncProfileSnapshotFromGame(targetName)
-        -- Ensure context fields remain populated even if runtime API resolution was partial.
-        local refreshedProfile = WoWKeybDB.profiles[targetName]
-        if type(refreshedProfile) == "table" and type(context) == "table" then
-            if tostring(refreshedProfile.class or "") == "" then
-                refreshedProfile.class = context.class
-            end
-            if tostring(refreshedProfile.spec or refreshedProfile.spec_id or refreshedProfile.specId or "") == "" then
-                refreshedProfile.spec = context.spec
-                if tostring(refreshedProfile.specId or refreshedProfile.spec_id or "") == "" then
-                    refreshedProfile.specId = context.specId
-                end
-            end
-            if tostring(refreshedProfile.heroTalent or refreshedProfile.hero_talent or refreshedProfile.hero_talent_id or refreshedProfile.heroTalentId or "") == "" then
-                refreshedProfile.heroTalent = context.heroTalent
-                if tostring(refreshedProfile.heroTalentId or refreshedProfile.hero_talent_id or "") == "" then
-                    refreshedProfile.heroTalentId = context.heroTalentId
-                end
-            end
-        end
+        -- Live sync intentionally disabled: leave profile data as stored defaults/context.
         newProfileEdit:SetText("")
 
         print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
@@ -5587,20 +5581,20 @@ local function createSettingsPanel()
 
     local duplicateLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     duplicateLabel:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -10)
-    duplicateLabel:SetText("Copy:")
-
-    duplicateDropdown = CreateFrame("Frame", "WoWKeybDuplicateProfileDropdown", panel, "UIDropDownMenuTemplate")
-    duplicateDropdown:SetPoint("TOPLEFT", duplicateLabel, "BOTTOMLEFT", -16, -4)
-    UIDropDownMenu_SetWidth(duplicateDropdown, 170)
+    duplicateLabel:SetText("Copy selected profile:")
 
     duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    duplicateBtn:SetSize(90, 24)
-    duplicateBtn:SetPoint("LEFT", duplicateDropdown, "RIGHT", 8, 0)
+    duplicateBtn:SetSize(120, 24)
+    duplicateBtn:SetPoint("TOPLEFT", duplicateLabel, "BOTTOMLEFT", 0, -4)
     duplicateBtn:SetText("Copy")
     duplicateBtn:SetScript("OnClick", function()
-        local source = duplicateSourceName
+        local source = selectedProfileName or WoWKeybDB.currentProfile
         if not source or source == "" then
-            print("|cffff0000[WoWKeyb]|r Select a profile to copy.")
+            print("|cffff0000[WoWKeyb]|r Select a profile first.")
+            return
+        end
+        if source == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Blizzard Default cannot be copied.")
             return
         end
         local sourceProfile = WoWKeybDB.profiles[source]
@@ -5713,26 +5707,9 @@ local function createSettingsPanel()
     deleteBtn:SetPoint("TOPLEFT", renameBtn, "BOTTOMLEFT", 0, -8)
     deleteBtn:SetText("Delete Profile")
 
-    copyViewerBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    copyViewerBtn:SetSize(180, 24)
-    copyViewerBtn:SetPoint("TOPLEFT", duplicateDropdown, "BOTTOMLEFT", 16, -8)
-    copyViewerBtn:SetText("View Keybinding Map")
-    copyViewerBtn:SetScript("OnClick", function()
-        local target = duplicateSourceName
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No copy source profile selected.")
-            return
-        end
-        if not WoWKeybDB.profiles[target] then
-            print("|cffff0000[WoWKeyb]|r Copy source profile not found: " .. tostring(target))
-            return
-        end
-        WoWKeyb:ShowKeybindingViewer(target)
-    end)
-
     resetBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     resetBtn:SetSize(180, 24)
-    resetBtn:SetPoint("TOPLEFT", copyViewerBtn, "BOTTOMLEFT", 0, -8)
+    resetBtn:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -8)
     resetBtn:SetText("Reset Profile")
     resetBtn:SetScript("OnClick", function()
         local target = selectedProfileName
