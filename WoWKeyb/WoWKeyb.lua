@@ -6064,11 +6064,11 @@ local function slashHandler(msg)
         if arg == "" then
             print("|cff00ff00[WoWKeyb]|r Usage: /wowkeyb apply <profile name>")
             print("|cff00ff00[WoWKeyb]|r Default profile: " .. BLIZZARD_DEFAULT_PROFILE)
-            local list = listStoredProfiles(true)
+            local list = listStoredProfiles(false)
             if #list > 0 then
                 print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
             else
-                print("|cff00ff00[WoWKeyb]|r No matching profiles for this character context. Use /wowkeyb import <profile name> to paste a share code first.")
+                print("|cff00ff00[WoWKeyb]|r No stored profiles yet. Use /wowkeyb import <profile name> to paste a share code first.")
             end
             return
         end
@@ -6090,11 +6090,11 @@ local function slashHandler(msg)
         return
 
     elseif cmd == "list" or cmd == "l" then
-        local list = listStoredProfiles(true)
+        local list = listStoredProfiles(false)
         if #list == 0 then
-            print("|cff00ff00[WoWKeyb]|r No matching profiles for this character context.")
+            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
         else
-            print("|cff00ff00[WoWKeyb]|r Stored profiles: " .. table.concat(list, ", "))
+            print("|cff00ff00[WoWKeyb]|r Stored profiles (account-wide): " .. table.concat(list, ", "))
         end
 
     elseif cmd == "listall" or cmd == "la" then
