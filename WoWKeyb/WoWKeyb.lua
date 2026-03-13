@@ -2235,6 +2235,40 @@ local function applyBlizzardDefaultProfile()
     return true, "Applied Blizzard default bars"
 end
 
+local function clearActionBarsAndBindings()
+    if InCombatLockdown() then
+        return false, "Cannot clear bars and bindings while in combat"
+    end
+
+    for slot = 1, 60 do
+        local actionSlot = toBlizzardActionSlot(slot)
+        if actionSlot and type(ClearAction) == "function" then
+            pcall(function()
+                ClearAction(actionSlot)
+            end)
+        end
+    end
+
+    for slot = 1, 60 do
+        local command = SLOT_COMMANDS[slot]
+        if command and type(GetBindingKey) == "function" then
+            local keys = { GetBindingKey(command) }
+            for _, existingKey in ipairs(keys) do
+                if existingKey and existingKey ~= "" then
+                    SetBinding(existingKey)
+                end
+            end
+        end
+    end
+
+    if type(GetCurrentBindingSet) == "function" and type(SaveBindings) == "function" then
+        local bindingSet = GetCurrentBindingSet()
+        SaveBindings(bindingSet)
+    end
+
+    return true
+end
+
 local function applySelectionByName(target)
     ensureDBDefaults()
     if not target or target == "" then
@@ -5168,6 +5202,40 @@ local function createSettingsPanel()
         }
     end
 
+    local function getCurrentPlayerContextValues()
+        local _, englishClass, classToken = UnitClass("player")
+        local classValue = tostring(englishClass or classToken or "Unknown")
+
+        local specId, specName = nil, nil
+        local specIndex = GetSpecialization and GetSpecialization() or nil
+        if specIndex and GetSpecializationInfo then
+            specId, specName = GetSpecializationInfo(specIndex)
+        end
+        local specValue = tostring(specName or specId or "")
+        local specIdValue = specId and tostring(specId) or ""
+
+        local heroIdValue = ""
+        local heroValue = ""
+        if C_ClassTalents and type(C_ClassTalents.GetActiveHeroTalentSpec) == "function" then
+            local okHero, activeHeroId = pcall(C_ClassTalents.GetActiveHeroTalentSpec)
+            if okHero and activeHeroId then
+                heroIdValue = tostring(activeHeroId)
+                heroValue = resolveHeroTalentNameFromId(activeHeroId)
+                if heroValue == "" then
+                    heroValue = heroIdValue
+                end
+            end
+        end
+
+        return {
+            class = classValue,
+            spec = specValue,
+            specId = specIdValue,
+            heroTalent = heroValue,
+            heroTalentId = heroIdValue,
+        }
+    end
+
     local function refreshDuplicateSourceSelector()
         if not duplicateDropdown then return end
         local candidates = {}
@@ -5374,6 +5442,10 @@ local function createSettingsPanel()
     createBtn:SetText("New")
     createBtn:SetScript("OnClick", function()
         local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if InCombatLockdown() then
+            print("|cffff0000[WoWKeyb]|r Cannot create a new profile while in combat.")
+            return
+        end
         if targetName == "" then
             print("|cffff0000[WoWKeyb]|r New profile name cannot be empty.")
             return
@@ -5388,21 +5460,55 @@ local function createSettingsPanel()
         end
 
         WoWKeybDB.profiles[targetName] = buildDefaultProfileState(targetName, nil)
+        local createdProfile = WoWKeybDB.profiles[targetName]
+        local context = getCurrentPlayerContextValues()
+        if type(createdProfile) == "table" and type(context) == "table" then
+            createdProfile.class = context.class
+            createdProfile.spec = context.spec
+            createdProfile.specId = context.specId
+            createdProfile.heroTalent = context.heroTalent
+            createdProfile.heroTalentId = context.heroTalentId
+        end
         selectedProfileName = targetName
         WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
         WoWKeybDB.currentProfile = targetName
         setPreferredProfileForCurrentContext(targetName)
+
+        local cleared, clearErr = clearActionBarsAndBindings()
+        if not cleared then
+            print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
+            return
+        end
         syncProfileSnapshotFromGame(targetName)
+        -- Ensure context fields remain populated even if runtime API resolution was partial.
+        local refreshedProfile = WoWKeybDB.profiles[targetName]
+        if type(refreshedProfile) == "table" and type(context) == "table" then
+            if tostring(refreshedProfile.class or "") == "" then
+                refreshedProfile.class = context.class
+            end
+            if tostring(refreshedProfile.spec or refreshedProfile.spec_id or refreshedProfile.specId or "") == "" then
+                refreshedProfile.spec = context.spec
+                if tostring(refreshedProfile.specId or refreshedProfile.spec_id or "") == "" then
+                    refreshedProfile.specId = context.specId
+                end
+            end
+            if tostring(refreshedProfile.heroTalent or refreshedProfile.hero_talent or refreshedProfile.hero_talent_id or refreshedProfile.heroTalentId or "") == "" then
+                refreshedProfile.heroTalent = context.heroTalent
+                if tostring(refreshedProfile.heroTalentId or refreshedProfile.hero_talent_id or "") == "" then
+                    refreshedProfile.heroTalentId = context.heroTalentId
+                end
+            end
+        end
         newProfileEdit:SetText("")
 
-        print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName))
+        print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
         refreshProfileSelector()
         refreshCurrentProfileText()
     end)
 
     local duplicateLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     duplicateLabel:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -10)
-    duplicateLabel:SetText("Copy From:")
+    duplicateLabel:SetText("Copy To:")
 
     duplicateDropdown = CreateFrame("Frame", "WoWKeybDuplicateProfileDropdown", panel, "UIDropDownMenuTemplate")
     duplicateDropdown:SetPoint("TOPLEFT", duplicateLabel, "BOTTOMLEFT", -16, -4)
@@ -5413,14 +5519,14 @@ local function createSettingsPanel()
     duplicateBtn:SetPoint("LEFT", duplicateDropdown, "RIGHT", 8, 0)
     duplicateBtn:SetText("Copy")
     duplicateBtn:SetScript("OnClick", function()
-        local destination = selectedProfileName
-        local source = duplicateSourceName
-        if not destination or destination == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Select a non-default destination profile first.")
+        local source = selectedProfileName
+        local destination = duplicateSourceName
+        if not source or source == BLIZZARD_DEFAULT_PROFILE then
+            print("|cffff0000[WoWKeyb]|r Select a non-default source profile first.")
             return
         end
-        if not source or source == "" then
-            print("|cffff0000[WoWKeyb]|r Select a source profile to copy.")
+        if not destination or destination == "" then
+            print("|cffff0000[WoWKeyb]|r Select a destination profile to receive the copy.")
             return
         end
         if source == destination then
@@ -5432,11 +5538,15 @@ local function createSettingsPanel()
             print("|cffff0000[WoWKeyb]|r Source profile not found: " .. tostring(source))
             return
         end
+        if not WoWKeybDB.profiles[destination] then
+            print("|cffff0000[WoWKeyb]|r Destination profile not found: " .. tostring(destination))
+            return
+        end
 
         local copiedProfile = deepCopy(sourceProfile)
         copiedProfile.name = destination
         WoWKeybDB.profiles[destination] = copiedProfile
-        print("|cff00ff00[WoWKeyb]|r Copied profile \"" .. tostring(source) .. "\" into \"" .. tostring(destination) .. "\".")
+        print("|cff00ff00[WoWKeyb]|r Copied selected profile \"" .. tostring(source) .. "\" into \"" .. tostring(destination) .. "\".")
         refreshProfileSelector()
         refreshCurrentProfileText()
     end)
