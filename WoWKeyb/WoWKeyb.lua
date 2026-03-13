@@ -5240,9 +5240,7 @@ local function createSettingsPanel()
         if not duplicateDropdown then return end
         local candidates = {}
         for name, _ in pairs(WoWKeybDB.profiles or {}) do
-            if name ~= selectedProfileName then
-                candidates[#candidates + 1] = name
-            end
+            candidates[#candidates + 1] = name
         end
         table.sort(candidates)
 
@@ -5272,10 +5270,7 @@ local function createSettingsPanel()
         UIDropDownMenu_SetText(duplicateDropdown, duplicateSourceName or "No source profile")
 
         if duplicateBtn and duplicateBtn.Enable then
-            if duplicateSourceName and duplicateSourceName ~= "" and selectedProfileName
-                and selectedProfileName ~= BLIZZARD_DEFAULT_PROFILE
-                and WoWKeybDB.profiles[selectedProfileName]
-                and WoWKeybDB.profiles[duplicateSourceName] then
+            if duplicateSourceName and duplicateSourceName ~= "" and WoWKeybDB.profiles[duplicateSourceName] then
                 duplicateBtn:Enable()
             else
                 duplicateBtn:Disable()
@@ -5519,18 +5514,9 @@ local function createSettingsPanel()
     duplicateBtn:SetPoint("LEFT", duplicateDropdown, "RIGHT", 8, 0)
     duplicateBtn:SetText("Copy")
     duplicateBtn:SetScript("OnClick", function()
-        local destination = selectedProfileName
         local source = duplicateSourceName
-        if not destination or destination == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Select a non-default profile to receive the copy.")
-            return
-        end
         if not source or source == "" then
             print("|cffff0000[WoWKeyb]|r Select a profile to copy.")
-            return
-        end
-        if source == destination then
-            print("|cffff0000[WoWKeyb]|r Source and destination profiles cannot be the same.")
             return
         end
         local sourceProfile = WoWKeybDB.profiles[source]
@@ -5538,15 +5524,33 @@ local function createSettingsPanel()
             print("|cffff0000[WoWKeyb]|r Source profile not found: " .. tostring(source))
             return
         end
-        if not WoWKeybDB.profiles[destination] then
-            print("|cffff0000[WoWKeyb]|r Destination profile not found: " .. tostring(destination))
-            return
+
+        local function buildUniqueCopiedProfileName(baseName)
+            local seed = tostring(baseName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if seed == "" then
+                seed = "Copied Profile"
+            end
+            if not WoWKeybDB.profiles[seed] and seed ~= BLIZZARD_DEFAULT_PROFILE then
+                return seed
+            end
+            local index = 2
+            while true do
+                local candidate = string.format("%s (%d)", seed, index)
+                if not WoWKeybDB.profiles[candidate] and candidate ~= BLIZZARD_DEFAULT_PROFILE then
+                    return candidate
+                end
+                index = index + 1
+            end
         end
 
         local copiedProfile = deepCopy(sourceProfile)
-        copiedProfile.name = destination
-        WoWKeybDB.profiles[destination] = copiedProfile
-        print("|cff00ff00[WoWKeyb]|r Copied profile \"" .. tostring(source) .. "\" into \"" .. tostring(destination) .. "\".")
+        local newProfileName = buildUniqueCopiedProfileName(string.format("%s - Copy", tostring(source)))
+        copiedProfile.name = newProfileName
+        WoWKeybDB.profiles[newProfileName] = copiedProfile
+        selectedProfileName = newProfileName
+        panel.forceVisibleProfileName = newProfileName
+
+        print("|cff00ff00[WoWKeyb]|r Created copied profile \"" .. tostring(newProfileName) .. "\" from \"" .. tostring(source) .. "\".")
         refreshProfileSelector()
         refreshCurrentProfileText()
     end)
