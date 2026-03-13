@@ -5952,13 +5952,13 @@ local function createSettingsPanel()
     refreshCurrentProfileText()
 
     local helpText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    helpText:SetPoint("TOPLEFT", deleteBtn, "BOTTOMLEFT", 0, -14)
+    helpText:SetPoint("TOPLEFT", resetBtn, "BOTTOMLEFT", 0, -22)
     helpText:SetWidth(280)
     helpText:SetJustifyH("LEFT")
     helpText:SetText("Tip: Selecting a profile only changes selection. Use Apply Profile to apply a matching profile.")
 
     local applyLogCheckbox = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
-    applyLogCheckbox:SetPoint("TOPLEFT", helpText, "BOTTOMLEFT", -2, -10)
+    applyLogCheckbox:SetPoint("TOPLEFT", helpText, "BOTTOMLEFT", -2, -14)
     applyLogCheckbox:SetChecked(WoWKeybDB.debugApplyAssignments == true)
     if applyLogCheckbox.Text then
         applyLogCheckbox.Text:SetText("Show per-slot apply chat logs")
@@ -5969,7 +5969,7 @@ local function createSettingsPanel()
 
     -- Final spacing pass: keep New/Copy controls below help/debug controls.
     newProfileLabel:ClearAllPoints()
-    newProfileLabel:SetPoint("TOPLEFT", applyLogCheckbox, "BOTTOMLEFT", 2, -12)
+    newProfileLabel:SetPoint("TOPLEFT", applyLogCheckbox, "BOTTOMLEFT", 2, -16)
 
     WoWKeyb.optionsPanel = panel
 
