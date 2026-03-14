@@ -112,16 +112,14 @@ local function buildCurrentPlayerContextKey()
 end
 
 local function setPreferredProfileForCurrentContext(profileName)
-    ensureDBDefaults()
-    if not profileName or profileName == "" or profileName == BLIZZARD_DEFAULT_PROFILE then
-        return
-    end
-    WoWKeybDB.preferredProfileByContext[buildCurrentPlayerContextKey()] = profileName
+    -- Profile selection is strictly manual.
+    -- Keep this as a no-op to avoid mutating old preferred mappings.
+    return
 end
 
 local function getPreferredProfileForCurrentContext()
-    ensureDBDefaults()
-    return WoWKeybDB.preferredProfileByContext[buildCurrentPlayerContextKey()]
+    -- Profile selection is strictly manual.
+    return nil
 end
 
 ensureDBDefaults()
@@ -3053,63 +3051,8 @@ local function shouldAnnounceContextAutoSwitch(triggerEvent)
 end
 
 local function enforceCurrentProfileForPlayerContext(triggerEvent)
-    ensureDBDefaults()
-    local current = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
-
-    local matchingProfiles = listStoredProfiles(true)
-    local target = BLIZZARD_DEFAULT_PROFILE
-    local targetReason = "default"
-
-    if #matchingProfiles > 0 then
-        local preferred = getPreferredProfileForCurrentContext()
-        if preferred and WoWKeybDB.profiles[preferred] then
-            for _, candidate in ipairs(matchingProfiles) do
-                if candidate == preferred then
-                    target = preferred
-                    targetReason = "preferred"
-                    break
-                end
-            end
-        end
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            for _, candidate in ipairs(matchingProfiles) do
-                if candidate == current then
-                    target = current
-                    targetReason = "current"
-                    break
-                end
-            end
-        end
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            target = matchingProfiles[1]
-            targetReason = "first_match"
-        end
-    end
-
-    if target == current then
-        if target ~= BLIZZARD_DEFAULT_PROFILE then
-            setPreferredProfileForCurrentContext(target)
-        end
-        return
-    end
-
-    local ok, result = applySelectionByName(target)
-    if ok then
-        local announce = shouldAnnounceContextAutoSwitch(triggerEvent)
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            if announce then
-                print("|cffffcc00[WoWKeyb]|r No matching WoWKeyb profile for current class/spec/hero after "
-                    .. tostring(triggerEvent or "context change")
-                    .. "; switched to Blizzard Default.")
-            end
-        else
-            if announce then
-                print("|cff00ff00[WoWKeyb]|r Auto-selected profile for current class/spec/hero (" .. tostring(targetReason) .. "): " .. tostring(target))
-            end
-        end
-    else
-        print("|cffff0000[WoWKeyb]|r Failed to apply context profile " .. tostring(target) .. ": " .. tostring(result or "unknown error"))
-    end
+    -- Strictly manual profile selection: context changes never auto-switch profile.
+    return
 end
 
 local function jsonEscape(str)
@@ -5498,8 +5441,8 @@ local function createSettingsPanel()
 
         local statusLines = {
             string.format("Character setup: %s / %s / %s", tostring(classLabel), tostring(specLabel), tostring(heroLabel)),
-            string.format("Auto-select key: %s", tostring(contextKey)),
-            string.format("Preferred for this setup: %s", tostring(preferredProfile or "none")),
+            string.format("Context key: %s", tostring(contextKey)),
+            "Selection mode: Manual (no auto-switch)",
             string.format("Profiles for this setup (%d): %s", #matchingProfiles, summarizeNames(matchingProfiles, 6)),
             "",
         }
@@ -5531,9 +5474,9 @@ local function createSettingsPanel()
     newProfileEdit:SetMaxLetters(100)
 
     createBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    createBtn:SetSize(80, 24)
+    createBtn:SetSize(100, 24)
     createBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -6)
-    createBtn:SetText("New")
+    createBtn:SetText("Create New")
 
     local function createProfileFromInput()
         local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -5815,6 +5758,49 @@ local function createSettingsPanel()
         refreshCurrentProfileText()
     end
 
+    local function resolveRenamePopupOldName(popup, popupArgData)
+        local popupData = popupArgData
+        if popupData == nil and popup then
+            popupData = popup.data
+        end
+        if type(popupData) == "table" then
+            if popupData.oldName and popupData.oldName ~= "" then
+                return tostring(popupData.oldName)
+            end
+        elseif type(popupData) == "string" and popupData ~= "" then
+            return tostring(popupData)
+        end
+        if type(selectedProfileName) == "string" and selectedProfileName ~= "" then
+            return tostring(selectedProfileName)
+        end
+        if WoWKeybDB and type(WoWKeybDB.currentProfile) == "string" and WoWKeybDB.currentProfile ~= "" then
+            return tostring(WoWKeybDB.currentProfile)
+        end
+        return ""
+    end
+
+    local function resolveRenamePopupNewName(popup, editBox)
+        if popup and popup.editBox and type(popup.editBox.GetText) == "function" then
+            local txt = popup.editBox:GetText()
+            if txt ~= nil then
+                return tostring(txt)
+            end
+        end
+        if editBox and type(editBox.GetText) == "function" then
+            local txt = editBox:GetText()
+            if txt ~= nil then
+                return tostring(txt)
+            end
+        end
+        if StaticPopup1 and StaticPopup1.which == "WOWKEYB_RENAME_PROFILE" and StaticPopup1EditBox and type(StaticPopup1EditBox.GetText) == "function" then
+            return tostring(StaticPopup1EditBox:GetText() or "")
+        end
+        if StaticPopup2 and StaticPopup2.which == "WOWKEYB_RENAME_PROFILE" and StaticPopup2EditBox and type(StaticPopup2EditBox.GetText) == "function" then
+            return tostring(StaticPopup2EditBox:GetText() or "")
+        end
+        return ""
+    end
+
     if not StaticPopupDialogs["WOWKEYB_RENAME_PROFILE"] then
         StaticPopupDialogs["WOWKEYB_RENAME_PROFILE"] = {
             text = "Rename selected WoWKeyb profile \"%s\"",
@@ -5825,28 +5811,22 @@ local function createSettingsPanel()
             OnShow = function(self, data)
                 local editBox = self.editBox
                 if not editBox then return end
-                local popupData = data or self.data
-                local oldName = popupData and popupData.oldName or nil
+                local oldName = resolveRenamePopupOldName(self, data)
                 editBox:SetAutoFocus(true)
                 editBox:SetText(tostring(oldName or ""))
                 editBox:HighlightText()
             end,
             OnAccept = function(self, data)
-                local editBox = self and self.editBox
-                local popupData = data or (self and self.data) or nil
-                local newName = editBox and editBox:GetText() or ""
-                local oldName = popupData and popupData.oldName or nil
+                local oldName = resolveRenamePopupOldName(self, data)
+                local newName = resolveRenamePopupNewName(self, nil)
                 renameProfileByName(oldName, newName)
             end,
             EditBoxOnEnterPressed = function(self)
                 local parent = self:GetParent()
-                if parent then
-                    local popupData = parent.data
-                    local oldName = popupData and popupData.oldName or nil
-                    local newName = self:GetText() or ""
-                    renameProfileByName(oldName, newName)
-                    parent:Hide()
-                end
+                local oldName = resolveRenamePopupOldName(parent, parent and parent.data or nil)
+                local newName = resolveRenamePopupNewName(parent, self)
+                renameProfileByName(oldName, newName)
+                if parent then parent:Hide() end
             end,
             timeout = 0,
             whileDead = true,
