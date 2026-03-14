@@ -2065,7 +2065,7 @@ end
 
 local canRefreshViewerFromGame
 
-local function syncProfileSnapshotFromGame(profileName)
+local function syncProfileSnapshotFromGame(profileName, options)
     local targetName = profileName or WoWKeybDB.currentProfile
     local snapshotAt = time()
     local profile = getStoredProfile(targetName)
@@ -2083,8 +2083,10 @@ local function syncProfileSnapshotFromGame(profileName)
         }
     end
 
-    -- Never overwrite an off-context profile with live bars/bindings from another character/spec.
-    if not canRefreshViewerFromGame(targetName) then
+    -- Never overwrite an off-context profile with live bars/bindings from another character/spec,
+    -- unless an explicit capture operation requests a forced sync.
+    local forceSync = type(options) == "table" and options.force == true
+    if not forceSync and not canRefreshViewerFromGame(targetName) then
         return {
             contextOk = false,
             contextChanged = 0,
@@ -5529,26 +5531,32 @@ local function createSettingsPanel()
     newProfileEdit:SetMaxLetters(100)
 
     createBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    createBtn:SetSize(70, 24)
-    createBtn:SetPoint("LEFT", newProfileEdit, "RIGHT", 8, 0)
+    createBtn:SetSize(80, 24)
+    createBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -6)
     createBtn:SetText("New")
-    createBtn:SetScript("OnClick", function()
+
+    local loadCurrentBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    loadCurrentBtn:SetSize(130, 24)
+    loadCurrentBtn:SetPoint("LEFT", createBtn, "RIGHT", 8, 0)
+    loadCurrentBtn:SetText("New from Current")
+
+    local function createProfileFromInput(captureCurrentSetup)
         local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if InCombatLockdown() then
             print("|cffff0000[WoWKeyb]|r Cannot create a new profile while in combat.")
-            return
+            return false
         end
         if targetName == "" then
             print("|cffff0000[WoWKeyb]|r New profile name cannot be empty.")
-            return
+            return false
         end
         if targetName == BLIZZARD_DEFAULT_PROFILE then
             print("|cffff0000[WoWKeyb]|r That name is reserved.")
-            return
+            return false
         end
         if WoWKeybDB.profiles[targetName] then
             print("|cffff0000[WoWKeyb]|r A profile with that name already exists.")
-            return
+            return false
         end
 
         WoWKeybDB.profiles[targetName] = buildDefaultProfileState(targetName, nil)
@@ -5566,22 +5574,40 @@ local function createSettingsPanel()
         WoWKeybDB.currentProfile = targetName
         setPreferredProfileForCurrentContext(targetName)
 
-        local cleared, clearErr = clearActionBarsAndBindings()
-        if not cleared then
-            print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
-            return
+        if captureCurrentSetup then
+            local syncResult = syncProfileSnapshotFromGame(targetName, { force = true })
+            if not (syncResult and syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) then
+                print("|cffffcc00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (captured current setup with partial sync).")
+            else
+                print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName)
+                    .. " from current setup (spells/macros " .. tostring(syncResult.spellsChanged)
+                    .. ", bindings " .. tostring(syncResult.layoutChanged) .. ").")
+            end
+        else
+            local cleared, clearErr = clearActionBarsAndBindings()
+            if not cleared then
+                print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
+                return false
+            end
+            print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
         end
-        -- Live sync intentionally disabled: leave profile data as stored defaults/context.
-        newProfileEdit:SetText("")
 
-        print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
+        newProfileEdit:SetText("")
         refreshProfileSelector()
         refreshCurrentProfileText()
+        return true
+    end
+
+    createBtn:SetScript("OnClick", function()
+        createProfileFromInput(false)
+    end)
+    loadCurrentBtn:SetScript("OnClick", function()
+        createProfileFromInput(true)
     end)
 
     duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     duplicateBtn:SetSize(180, 24)
-    duplicateBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -12)
+    duplicateBtn:SetPoint("TOPLEFT", createBtn, "BOTTOMLEFT", 0, -10)
     duplicateBtn:SetText("Copy Profile")
     duplicateBtn:SetScript("OnClick", function()
         local source = selectedProfileName or WoWKeybDB.currentProfile
@@ -5818,21 +5844,24 @@ local function createSettingsPanel()
             OnShow = function(self, data)
                 local editBox = self.editBox
                 if not editBox then return end
+                local popupData = data or self.data
+                local oldName = popupData and popupData.oldName or nil
                 editBox:SetAutoFocus(true)
-                editBox:SetText((data and data.oldName) or "")
+                editBox:SetText(tostring(oldName or ""))
                 editBox:HighlightText()
             end,
             OnAccept = function(self, data)
                 local editBox = self and self.editBox
+                local popupData = data or (self and self.data) or nil
                 local newName = editBox and editBox:GetText() or ""
-                local oldName = data and data.oldName or nil
+                local oldName = popupData and popupData.oldName or nil
                 renameProfileByName(oldName, newName)
             end,
             EditBoxOnEnterPressed = function(self)
                 local parent = self:GetParent()
                 if parent then
-                    local data = parent.data
-                    local oldName = data and data.oldName or nil
+                    local popupData = parent.data
+                    local oldName = popupData and popupData.oldName or nil
                     local newName = self:GetText() or ""
                     renameProfileByName(oldName, newName)
                     parent:Hide()
