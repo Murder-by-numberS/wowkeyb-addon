@@ -5535,12 +5535,7 @@ local function createSettingsPanel()
     createBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -6)
     createBtn:SetText("New")
 
-    local loadCurrentBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    loadCurrentBtn:SetSize(130, 24)
-    loadCurrentBtn:SetPoint("LEFT", createBtn, "RIGHT", 8, 0)
-    loadCurrentBtn:SetText("New from Current")
-
-    local function createProfileFromInput(captureCurrentSetup)
+    local function createProfileFromInput()
         local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if InCombatLockdown() then
             print("|cffff0000[WoWKeyb]|r Cannot create a new profile while in combat.")
@@ -5574,23 +5569,12 @@ local function createSettingsPanel()
         WoWKeybDB.currentProfile = targetName
         setPreferredProfileForCurrentContext(targetName)
 
-        if captureCurrentSetup then
-            local syncResult = syncProfileSnapshotFromGame(targetName, { force = true })
-            if not (syncResult and syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) then
-                print("|cffffcc00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (captured current setup with partial sync).")
-            else
-                print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName)
-                    .. " from current setup (spells/macros " .. tostring(syncResult.spellsChanged)
-                    .. ", bindings " .. tostring(syncResult.layoutChanged) .. ").")
-            end
-        else
-            local cleared, clearErr = clearActionBarsAndBindings()
-            if not cleared then
-                print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
-                return false
-            end
-            print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
+        local cleared, clearErr = clearActionBarsAndBindings()
+        if not cleared then
+            print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
+            return false
         end
+        print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
 
         newProfileEdit:SetText("")
         refreshProfileSelector()
@@ -5599,10 +5583,7 @@ local function createSettingsPanel()
     end
 
     createBtn:SetScript("OnClick", function()
-        createProfileFromInput(false)
-    end)
-    loadCurrentBtn:SetScript("OnClick", function()
-        createProfileFromInput(true)
+        createProfileFromInput()
     end)
 
     duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
