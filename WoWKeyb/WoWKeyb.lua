@@ -4646,8 +4646,40 @@ local function refreshViewerFrame(frame)
     keyToEntries = {}
     for slot = 1, 60 do
         local entry = slotData[slot]
+        local keyCandidates = {}
+        local keySeen = {}
+
+        local function addKeyCandidate(rawKey)
+            local profileKey = tostring(rawKey or "")
+            if profileKey == "" then
+                return
+            end
+            local normalizedCandidate = normalizeKey(profileKey)
+            if normalizedCandidate == "" or keySeen[normalizedCandidate] then
+                return
+            end
+            keySeen[normalizedCandidate] = true
+            keyCandidates[#keyCandidates + 1] = profileKey
+        end
+
         if entry and entry.key and entry.key ~= "" then
-            local normalizedEntryKey = normalizeKey(entry.key)
+            addKeyCandidate(entry.key)
+        end
+
+        -- Include all live bindings for this slot command so secondary binds (e.g. G)
+        -- appear in the keyboard map even when a different primary bind exists.
+        local command = SLOT_COMMANDS[slot]
+        if command and command ~= "" then
+            local keys = { GetBindingKey(command) }
+            for _, rawWowKey in ipairs(keys) do
+                if rawWowKey and rawWowKey ~= "" then
+                    addKeyCandidate(wowBindingToProfileKey(rawWowKey))
+                end
+            end
+        end
+
+        for _, candidateKey in ipairs(keyCandidates) do
+            local normalizedEntryKey = normalizeKey(candidateKey)
             local baseKey = normalizedEntryKey
             local changed = true
             while changed and baseKey and baseKey ~= "" do
@@ -4666,9 +4698,9 @@ local function refreshViewerFrame(frame)
             if baseKey and baseKey ~= "" then
                 keyToEntries[baseKey] = keyToEntries[baseKey] or {}
                 table.insert(keyToEntries[baseKey], {
-                    key = tostring(entry.key or ""),
-                    spellName = tostring(entry.spellName or "-"),
-                    icon = entry.icon,
+                    key = tostring(candidateKey or ""),
+                    spellName = tostring((entry and entry.spellName) or "-"),
+                    icon = entry and entry.icon or nil,
                     slot = slot,
                 })
             end
@@ -5672,6 +5704,21 @@ local function createSettingsPanel()
     createBtn:SetSize(100, 24)
     createBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -6)
     createBtn:SetText("Create New")
+    createBtn:Disable()
+    createBtn:SetAlpha(0.5)
+
+    local function refreshCreateButtonState()
+        local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if targetName ~= "" then
+            createBtn:Enable()
+            createBtn:SetAlpha(1)
+        else
+            createBtn:Disable()
+            createBtn:SetAlpha(0.5)
+        end
+    end
+    newProfileEdit:SetScript("OnTextChanged", refreshCreateButtonState)
+    refreshCreateButtonState()
 
     local function validateNewProfileNameFromInput()
         local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -5763,6 +5810,7 @@ local function createSettingsPanel()
         end
 
         newProfileEdit:SetText("")
+        refreshCreateButtonState()
         refreshProfileSelector()
         refreshCurrentProfileText()
         return true
