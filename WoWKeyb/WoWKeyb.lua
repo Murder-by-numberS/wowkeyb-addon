@@ -1773,112 +1773,125 @@ local function syncProfileSpellsFromActionBars(profileName)
 
     local layoutBarIndexById = buildLayoutBarIndexById(profile)
     local changed = 0
-
-    for _, keybind in ipairs(profile.keybinds) do
-        if keybind and keybind.key then
-            local wowKey = normalizeKey(keybind.key)
-            local slot = resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
-            if slot then
-                local currentSpell = keybind.spell or {}
-                local actionSlot = toBlizzardActionSlot(slot)
-                local actionType, actionId = GetActionInfo(actionSlot)
-
-                local function setSpellFromSlot(nextSpell)
-                    local prevSpellId = tostring(currentSpell.spellId or currentSpell.spell_id or "")
-                    local prevName = tostring(currentSpell.name or "")
-                    local prevIcon = tostring(currentSpell.icon or "")
-                    local prevActionType = tostring(currentSpell.actionType or currentSpell.action_type or "")
-                    local prevIsMacro = currentSpell.isMacro == true
-                    local prevMacroId = tostring(currentSpell.macroId or currentSpell.macro_id or prevSpellId:match("^macro:(.+)$") or "")
-                    local prevMacroText = tostring(currentSpell.macroText or currentSpell.macro_text or currentSpell.text or currentSpell.body or "")
-                    local prevSourceSpellId = tostring(currentSpell.sourceSpellId or currentSpell.source_spell_id or "")
-                    local prevSourceSpellName = tostring(currentSpell.sourceSpellName or currentSpell.source_spell_name or "")
-
-                    local nextSpellId = tostring(nextSpell and nextSpell.spellId or "")
-                    local nextName = tostring(nextSpell and nextSpell.name or "")
-                    local nextIcon = tostring(nextSpell and nextSpell.icon or "")
-                    local nextActionType = tostring(nextSpell and nextSpell.actionType or "spell")
-                    local nextIsMacro = nextSpell and nextSpell.isMacro == true or false
-                    local nextMacroId = tostring(nextSpell and nextSpell.macroId or "")
-                    local nextMacroText = tostring(nextSpell and nextSpell.macroText or "")
-                    local nextSourceSpellId = tostring(nextSpell and nextSpell.sourceSpellId or "")
-                    local nextSourceSpellName = tostring(nextSpell and nextSpell.sourceSpellName or "")
-
-                    if prevSpellId ~= nextSpellId
-                        or prevName ~= nextName
-                        or prevIcon ~= nextIcon
-                        or prevActionType ~= nextActionType
-                        or prevIsMacro ~= nextIsMacro
-                        or prevMacroId ~= nextMacroId
-                        or prevMacroText ~= nextMacroText
-                        or prevSourceSpellId ~= nextSourceSpellId
-                        or prevSourceSpellName ~= nextSourceSpellName then
-                        keybind.spell = {
-                            spellId = nextSpellId,
-                            name = nextName,
-                            icon = nextIcon,
-                            description = currentSpell.description or "",
-                            actionType = nextActionType,
-                            isMacro = nextIsMacro,
-                            macroId = nextMacroId,
-                            macroText = nextMacroText,
-                            sourceSpellId = nextSourceSpellId,
-                            sourceSpellName = nextSourceSpellName,
-                        }
-                        changed = changed + 1
-                    end
-                end
-
-                if actionType == "macro" then
-                    local barMacro = readMacroFromActionSlot(actionSlot)
-                    if barMacro then
-                        setSpellFromSlot({
-                            spellId = barMacro.spellId,
-                            name = barMacro.name,
-                            icon = barMacro.icon,
-                            actionType = "macro",
-                            isMacro = true,
-                            macroId = barMacro.macroId,
-                            macroText = barMacro.macroText,
-                            sourceSpellId = currentSpell.sourceSpellId or currentSpell.source_spell_id or "",
-                            sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
-                        })
-                    else
-                        -- Keep macro identity even when body text is unavailable at snapshot time.
-                        local macroName, macroIcon = nil, nil
-                        if actionId and type(GetMacroInfo) == "function" then
-                            macroName, macroIcon = GetMacroInfo(actionId)
-                        end
-                        setSpellFromSlot({
-                            spellId = "macro:" .. tostring(actionId or ""),
-                            name = tostring(macroName or currentSpell.name or "WoWKeybMacro"),
-                            icon = macroIcon or currentSpell.icon or "",
-                            actionType = "macro",
-                            isMacro = true,
-                            macroId = tostring(actionId or currentSpell.macroId or currentSpell.macro_id or ""),
-                            macroText = tostring(currentSpell.macroText or currentSpell.macro_text or currentSpell.text or currentSpell.body or ""),
-                            sourceSpellId = currentSpell.sourceSpellId or currentSpell.source_spell_id or "",
-                            sourceSpellName = currentSpell.sourceSpellName or currentSpell.source_spell_name or "",
-                        })
-                    end
-                else
-                    local barSpell = readSpellFromActionSlot(actionSlot)
-                    if barSpell then
-                        setSpellFromSlot({
-                            spellId = barSpell.spellId,
-                            name = barSpell.name,
-                            icon = barSpell.icon,
-                            actionType = "spell",
-                            isMacro = false,
-                        })
-                    else
-                        -- Slot no longer points to a spell/macro (or is empty); clear stale mapping.
-                        setSpellFromSlot(nil)
-                    end
+    local previousBySlot = {}
+    if type(profile.keybinds) == "table" then
+        for _, keybind in ipairs(profile.keybinds) do
+            if type(keybind) == "table" then
+                local wowKey = normalizeKey(keybind.key)
+                local slot = resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById)
+                if slot then
+                    previousBySlot[slot] = keybind
                 end
             end
         end
     end
+
+    local rebuiltKeybinds = {}
+    local rebuiltBySlot = {}
+    for slot = 1, 60 do
+        local actionSlot = toBlizzardActionSlot(slot)
+        local actionType, actionId = GetActionInfo(actionSlot)
+        local previous = previousBySlot[slot]
+        local previousSpell = type(previous) == "table" and type(previous.spell) == "table" and previous.spell or {}
+        local nextSpell = nil
+
+        if actionType == "macro" then
+            local barMacro = readMacroFromActionSlot(actionSlot)
+            if barMacro then
+                nextSpell = {
+                    spellId = barMacro.spellId,
+                    name = barMacro.name,
+                    icon = barMacro.icon,
+                    actionType = "macro",
+                    isMacro = true,
+                    macroId = barMacro.macroId,
+                    macroText = barMacro.macroText,
+                    sourceSpellId = previousSpell.sourceSpellId or previousSpell.source_spell_id or "",
+                    sourceSpellName = previousSpell.sourceSpellName or previousSpell.source_spell_name or "",
+                }
+            else
+                local macroName, macroIcon = nil, nil
+                if actionId and type(GetMacroInfo) == "function" then
+                    macroName, macroIcon = GetMacroInfo(actionId)
+                end
+                nextSpell = {
+                    spellId = "macro:" .. tostring(actionId or ""),
+                    name = tostring(macroName or previousSpell.name or "WoWKeybMacro"),
+                    icon = macroIcon or previousSpell.icon or "",
+                    actionType = "macro",
+                    isMacro = true,
+                    macroId = tostring(actionId or previousSpell.macroId or previousSpell.macro_id or ""),
+                    macroText = tostring(previousSpell.macroText or previousSpell.macro_text or previousSpell.text or previousSpell.body or ""),
+                    sourceSpellId = previousSpell.sourceSpellId or previousSpell.source_spell_id or "",
+                    sourceSpellName = previousSpell.sourceSpellName or previousSpell.source_spell_name or "",
+                }
+            end
+        else
+            local barSpell = readSpellFromActionSlot(actionSlot)
+            if barSpell then
+                nextSpell = {
+                    spellId = barSpell.spellId,
+                    name = barSpell.name,
+                    icon = barSpell.icon,
+                    actionType = "spell",
+                    isMacro = false,
+                }
+            end
+        end
+
+        if nextSpell then
+            local barIdx = math.floor((slot - 1) / 12) + 1
+            local slotIdx = ((slot - 1) % 12) + 1
+            local command = SLOT_COMMANDS[slot]
+            local wowKey = nil
+            if command and command ~= "" then
+                local keys = { GetBindingKey(command) }
+                for _, key in ipairs(keys) do
+                    if key and key ~= "" then
+                        wowKey = key
+                        break
+                    end
+                end
+            end
+            local profileKey = wowBindingToProfileKey(wowKey)
+            local keybind = {
+                key = profileKey,
+                spell = nextSpell,
+                barId = "bar" .. tostring(barIdx),
+                slotIndex = slotIdx - 1,
+            }
+            rebuiltKeybinds[#rebuiltKeybinds + 1] = keybind
+            rebuiltBySlot[slot] = keybind
+        end
+    end
+
+    local function slotSignature(kb)
+        if type(kb) ~= "table" then
+            return ""
+        end
+        local spell = type(kb.spell) == "table" and kb.spell or {}
+        return table.concat({
+            tostring(kb.key or ""),
+            tostring(kb.barId or kb.bar_id or ""),
+            tostring(tonumber(kb.slotIndex or kb.slot_index) or 0),
+            tostring(spell.spellId or spell.spell_id or ""),
+            tostring(spell.name or ""),
+            tostring(spell.icon or ""),
+            tostring(spell.actionType or spell.action_type or ""),
+            tostring(spell.isMacro == true),
+            tostring(spell.macroId or spell.macro_id or ""),
+            tostring(spell.macroText or spell.macro_text or spell.text or spell.body or ""),
+            tostring(spell.sourceSpellId or spell.source_spell_id or ""),
+            tostring(spell.sourceSpellName or spell.source_spell_name or ""),
+        }, "\31")
+    end
+
+    for slot = 1, 60 do
+        if slotSignature(previousBySlot[slot]) ~= slotSignature(rebuiltBySlot[slot]) then
+            changed = changed + 1
+        end
+    end
+    profile.keybinds = rebuiltKeybinds
 
     -- Persist a normalized macro catalog (including icons) for cross-character viewer/export use.
     local macroById = {}
@@ -4626,8 +4639,10 @@ local function refreshViewerFrame(frame)
     ))
 
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
-    -- Always preview current live bars/bindings in viewer.
-    overlayLiveViewerBarData(profile, slotData)
+    local showLiveOverlay = canSaveViewerBarsToProfile(frame.profileName)
+    if showLiveOverlay then
+        overlayLiveViewerBarData(profile, slotData)
+    end
     keyToEntries = {}
     for slot = 1, 60 do
         local entry = slotData[slot]
@@ -4660,7 +4675,7 @@ local function refreshViewerFrame(frame)
         end
     end
     local liveMacroEntries, liveBySignature = buildLiveMacroEntriesFromBars(slotData)
-    if #liveMacroEntries > 0 then
+    if showLiveOverlay and #liveMacroEntries > 0 then
         for _, macro in ipairs(macroEntries or {}) do
             local signature = macroEntrySignature(macro)
             if signature ~= "" and not liveBySignature[signature] then
