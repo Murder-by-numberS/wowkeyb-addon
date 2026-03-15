@@ -1230,6 +1230,7 @@ local function parseMacroSpellData(body)
     local parsed = {
         spellIds = {},
         spellNames = {},
+        spellNameCandidates = {},
     }
     if not body or body == "" then
         return parsed
@@ -1263,6 +1264,9 @@ local function parseMacroSpellData(body)
         end
 
         local normalizedName = normalizeSpellText(token)
+        if token ~= "" then
+            parsed.spellNameCandidates[token] = true
+        end
         if normalizedName ~= "" then
             parsed.spellNames[normalizedName] = true
         end
@@ -1446,19 +1450,19 @@ local function buildProfileMacroLookup(profile)
             local macroId = tostring(macro.id or macro.macroId or macro.macro_id or "")
             local macroName = tostring(macro.name or macro.macroName or macro.macro_name or "")
             local macroBody = macro.macroText or macro.macro_text or macro.text or macro.body
-            if macroBody and tostring(macroBody):trim() ~= "" then
-                local payload = {
-                    name = macroName,
-                    body = tostring(macroBody),
-                    icon = tostring(macro.icon or ""),
-                }
-                if macroId ~= "" then
-                    registerMacroId(macroId, payload)
-                end
-                local normalizedName = normalizeSpellText(macroName)
-                if normalizedName ~= "" and not isGenericMacroName(normalizedName) then
-                    lookup.byName[normalizedName] = payload
-                end
+            local payload = {
+                name = macroName,
+                body = tostring(macroBody or ""),
+                icon = tostring(macro.icon or ""),
+                sourceSpellId = tostring(macro.sourceSpellId or macro.source_spell_id or ""),
+                sourceSpellName = tostring(macro.sourceSpellName or macro.source_spell_name or ""),
+            }
+            if macroId ~= "" then
+                registerMacroId(macroId, payload)
+            end
+            local normalizedName = normalizeSpellText(macroName)
+            if normalizedName ~= "" and not isGenericMacroName(normalizedName) then
+                lookup.byName[normalizedName] = payload
             end
         end
     end
@@ -1512,6 +1516,12 @@ local function extractMacroPayload(spell, macroLookup)
         if macroId ~= "" and macroLookup.byId[macroId] then
             macroText = macroLookup.byId[macroId].body
             macroName = macroLookup.byId[macroId].name or macroName
+            if sourceSpellId == "" and macroLookup.byId[macroId].sourceSpellId and tostring(macroLookup.byId[macroId].sourceSpellId) ~= "" then
+                sourceSpellId = tostring(macroLookup.byId[macroId].sourceSpellId)
+            end
+            if sourceSpellName == "" and macroLookup.byId[macroId].sourceSpellName and tostring(macroLookup.byId[macroId].sourceSpellName) ~= "" then
+                sourceSpellName = tostring(macroLookup.byId[macroId].sourceSpellName)
+            end
             if (not resolvedIcon or tostring(resolvedIcon) == "" or tostring(resolvedIcon) == "0")
                 and macroLookup.byId[macroId].icon and tostring(macroLookup.byId[macroId].icon) ~= "" then
                 resolvedIcon = macroLookup.byId[macroId].icon
@@ -1523,6 +1533,12 @@ local function extractMacroPayload(spell, macroLookup)
             if normalizedName ~= "" and not isGenericMacroName(normalizedName) and macroLookup.byName[normalizedName] then
                 macroText = macroLookup.byName[normalizedName].body
                 macroName = macroLookup.byName[normalizedName].name or macroName
+                if sourceSpellId == "" and macroLookup.byName[normalizedName].sourceSpellId and tostring(macroLookup.byName[normalizedName].sourceSpellId) ~= "" then
+                    sourceSpellId = tostring(macroLookup.byName[normalizedName].sourceSpellId)
+                end
+                if sourceSpellName == "" and macroLookup.byName[normalizedName].sourceSpellName and tostring(macroLookup.byName[normalizedName].sourceSpellName) ~= "" then
+                    sourceSpellName = tostring(macroLookup.byName[normalizedName].sourceSpellName)
+                end
                 if (not resolvedIcon or tostring(resolvedIcon) == "" or tostring(resolvedIcon) == "0")
                     and macroLookup.byName[normalizedName].icon and tostring(macroLookup.byName[normalizedName].icon) ~= "" then
                     resolvedIcon = macroLookup.byName[normalizedName].icon
@@ -1714,6 +1730,15 @@ local function resolveMacroIconForPayload(payload, macroIndex)
     if parsed and type(parsed.spellIds) == "table" then
         for spellId in pairs(parsed.spellIds) do
             local texture = resolveSpellTexture(tonumber(spellId))
+            if hasIcon(texture) then
+                return texture
+            end
+        end
+    end
+    if parsed and type(parsed.spellNameCandidates) == "table" then
+        local rawNameCandidates = parsed.spellNameCandidates
+        for spellName in pairs(rawNameCandidates) do
+            local texture = resolveSpellTexture(spellName)
             if hasIcon(texture) then
                 return texture
             end
