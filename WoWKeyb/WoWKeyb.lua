@@ -3975,19 +3975,19 @@ local function buildViewerData(profile)
             local spellName = tostring(spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName or "")
             local wowKey = normalizeKey(kb.key or "")
             local slot = resolvePreferredSlot(profile, kb, wowKey, layoutBarIndexById)
+            -- Viewer fallback: prefer explicit bar/slot metadata when available so
+            -- cross-character profile viewing does not drop entries on key mismatch.
+            if (not slot) and ((kb.barId or kb.bar_id) and (kb.slotIndex or kb.slot_index) ~= nil) then
+                local explicitSlot = resolveExplicitSlotCandidate(kb, layoutBarIndexById)
+                if explicitSlot and not slotData[explicitSlot] then
+                    slot = explicitSlot
+                end
+            end
             if (not slot) and wowKey and wowKey ~= "" and layoutKeyToSlots[wowKey] then
                 for _, candidate in ipairs(layoutKeyToSlots[wowKey]) do
                     if not slotData[candidate] then
                         slot = candidate
                         break
-                    end
-                end
-            end
-            if (not slot) and ((kb.barId or kb.bar_id) and (kb.slotIndex or kb.slot_index) ~= nil) then
-                if (not wowKey) or wowKey == "" or not layoutKeyToSlots[wowKey] then
-                    local explicitSlot = resolveExplicitSlotCandidate(kb, layoutBarIndexById)
-                    if explicitSlot and not slotData[explicitSlot] then
-                        slot = explicitSlot
                     end
                 end
             end
