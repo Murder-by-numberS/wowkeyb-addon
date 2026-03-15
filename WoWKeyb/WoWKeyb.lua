@@ -1671,7 +1671,15 @@ end
 
 local function resolveMacroIconForPayload(payload, macroIndex)
     local function hasIcon(value)
-        return value and tostring(value) ~= ""
+        if not value then return false end
+        local iconStr = tostring(value)
+        if iconStr == "" or iconStr == "0" then
+            return false
+        end
+        if iconStr:lower():find("^https?://") then
+            return false
+        end
+        return true
     end
 
     local function resolveSpellTexture(ref)
@@ -1720,13 +1728,26 @@ local function resolveMacroIconForPayload(payload, macroIndex)
         end
     end
 
+    -- Source ability metadata from imports is often available pre-apply.
+    local sourceSpellId = tonumber(payload and (payload.sourceSpellId or payload.source_spell_id) or "")
+    if sourceSpellId and sourceSpellId > 0 then
+        local texture = resolveSpellTexture(sourceSpellId)
+        if hasIcon(texture) then
+            return texture
+        end
+    end
+    local sourceSpellName = tostring(payload and (payload.sourceSpellName or payload.source_spell_name) or "")
+    if sourceSpellName ~= "" then
+        local texture = resolveSpellTexture(sourceSpellName)
+        if hasIcon(texture) then
+            return texture
+        end
+    end
+
     -- Last fallback: payload icon if it is WoW-usable (not a web URL).
     local payloadIcon = payload and payload.icon
     if hasIcon(payloadIcon) then
-        local iconStr = tostring(payloadIcon)
-        if not iconStr:lower():find("^https?://") then
-            return payloadIcon
-        end
+        return payloadIcon
     end
 
     return nil
@@ -2137,6 +2158,28 @@ canRefreshViewerFromGame = function(profileName)
         return false
     end
     return true
+end
+
+local function canSaveViewerBarsToProfile(profileName)
+    ensureDBDefaults()
+    local targetName = tostring(profileName or "")
+    if targetName == "" or targetName == BLIZZARD_DEFAULT_PROFILE then
+        return false, "invalid-target"
+    end
+    if tostring(WoWKeybDB.currentProfile or "") ~= targetName then
+        return false, "not-active-profile"
+    end
+    local profile = getStoredProfile(targetName)
+    if type(profile) ~= "table" then
+        return false, "profile-not-found"
+    end
+    if not profileMatchesCurrentClass(profile) then
+        return false, "class-mismatch"
+    end
+    if not profileMatchesCurrentSpecAndHero(profile) then
+        return false, "spec-hero-mismatch"
+    end
+    return true, nil
 end
 
 local function buildUniqueAutoProfileName(baseName)
@@ -3051,8 +3094,44 @@ local function shouldAnnounceContextAutoSwitch(triggerEvent)
 end
 
 local function enforceCurrentProfileForPlayerContext(triggerEvent)
-    -- Strictly manual profile selection: context changes never auto-switch profile.
-    return
+    -- Strictly manual profile selection:
+    -- never auto-switch to another WoWKeyb profile, but reset to Blizzard Default
+    -- if the carried current profile does not match the active character context.
+    ensureDBDefaults()
+
+    local current = tostring(WoWKeybDB.currentProfile or "")
+    if current == "" then
+        WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+        return
+    end
+    if current == BLIZZARD_DEFAULT_PROFILE then
+        return
+    end
+
+    local profile = getStoredProfile(current)
+    local shouldFallback = false
+    if type(profile) ~= "table" then
+        shouldFallback = true
+    else
+        if not profileMatchesCurrentClass(profile) then
+            shouldFallback = true
+        elseif not profileMatchesCurrentSpecAndHero(profile) then
+            shouldFallback = true
+        end
+    end
+
+    if not shouldFallback then
+        return
+    end
+
+    WoWKeybDB.previousProfile = current
+    WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+
+    local announce = shouldAnnounceContextAutoSwitch(triggerEvent)
+    if announce then
+        print("|cffffcc00[WoWKeyb]|r Current profile \"" .. tostring(current)
+            .. "\" does not match this character setup. Switched to Blizzard Default.")
+    end
 end
 
 local function jsonEscape(str)
@@ -3647,6 +3726,14 @@ local function buildViewerData(profile)
             if (not existing.body or existing.body == "") and macroPayload.body and tostring(macroPayload.body) ~= "" then
                 existing.body = tostring(macroPayload.body)
             end
+            if (not existing.sourceSpellId or existing.sourceSpellId == "")
+                and macroPayload.sourceSpellId and tostring(macroPayload.sourceSpellId) ~= "" then
+                existing.sourceSpellId = tostring(macroPayload.sourceSpellId)
+            end
+            if (not existing.sourceSpellName or existing.sourceSpellName == "")
+                and macroPayload.sourceSpellName and tostring(macroPayload.sourceSpellName) ~= "" then
+                existing.sourceSpellName = tostring(macroPayload.sourceSpellName)
+            end
             return existing
         end
         local entry = {
@@ -3747,18 +3834,14 @@ local function buildViewerData(profile)
         if existingIcon and tostring(existingIcon) ~= "" then
             local iconStr = tostring(existingIcon)
             local lowerIcon = iconStr:lower()
-            if not lowerIcon:find("^https?://") then
+            if iconStr ~= "0" and not lowerIcon:find("^https?://") then
                 return existingIcon
             end
         end
 
-        if type(GetMacroInfo) ~= "function" then
-            return nil
-        end
-
         local macroIndex
         local macroBody = tostring(macroPayload.body or "")
-        if macroBody ~= "" then
+        if macroBody ~= "" and type(GetMacroInfo) == "function" then
             macroIndex = findExistingMacroByBody(macroBody)
         end
         if (not macroIndex) and type(GetMacroIndexByName) == "function" then
@@ -3767,11 +3850,21 @@ local function buildViewerData(profile)
                 macroIndex = tonumber(byName)
             end
         end
-        if macroIndex then
+        if macroIndex and type(GetMacroInfo) == "function" then
             local _, macroIcon = GetMacroInfo(macroIndex)
-            if macroIcon and tostring(macroIcon) ~= "" then
+            if macroIcon and tostring(macroIcon) ~= "" and tostring(macroIcon) ~= "0" then
                 return macroIcon
             end
+        end
+
+        local fallbackIcon = resolveMacroIconForPayload({
+            body = tostring(macroPayload.body or ""),
+            icon = macroPayload.icon or (spell and spell.icon),
+            sourceSpellId = tostring(macroPayload.sourceSpellId or (spell and (spell.sourceSpellId or spell.source_spell_id)) or ""),
+            sourceSpellName = tostring(macroPayload.sourceSpellName or (spell and (spell.sourceSpellName or spell.source_spell_name)) or ""),
+        }, macroIndex)
+        if fallbackIcon and tostring(fallbackIcon) ~= "" then
+            return fallbackIcon
         end
         return nil
     end
@@ -3983,6 +4076,8 @@ local function buildViewerData(profile)
                     name = sanitizeMacroName(macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro"),
                     body = tostring(macroBody or ""),
                     icon = tostring(macro.icon or ""),
+                    sourceSpellId = tostring(macro.sourceSpellId or macro.source_spell_id or ""),
+                    sourceSpellName = tostring(macro.sourceSpellName or macro.source_spell_name or ""),
                     source = "profile-list",
                 }
                 ensureMacroEntry(seededPayload)
@@ -4040,7 +4135,10 @@ local function buildViewerData(profile)
     end)
 
     for _, macroEntry in ipairs(macroEntries) do
-        if type(macroEntry) == "table" and tostring(macroEntry.icon or "") == "" then
+        if type(macroEntry) == "table" then
+            local iconStr = tostring(macroEntry.icon or "")
+            local hasUsableIcon = iconStr ~= "" and iconStr ~= "0" and not iconStr:lower():find("^https?://")
+            if not hasUsableIcon then
             local macroIndex = nil
             local macroId = tonumber(macroEntry.macroId or "")
             if macroId and macroId > 0 and type(GetMacroInfo) == "function" then
@@ -4062,16 +4160,20 @@ local function buildViewerData(profile)
                     end
                 end
             end
-            if tostring(macroEntry.icon or "") == "" then
+            local iconAfterMacroLookup = tostring(macroEntry.icon or "")
+            if iconAfterMacroLookup == "" or iconAfterMacroLookup == "0" or iconAfterMacroLookup:lower():find("^https?://") then
                 local fallbackIcon = resolveMacroIconForPayload({
                     body = tostring(macroEntry.body or ""),
                     icon = macroEntry.icon,
+                    sourceSpellId = tostring(macroEntry.sourceSpellId or ""),
+                    sourceSpellName = tostring(macroEntry.sourceSpellName or ""),
                 }, macroIndex)
                 if fallbackIcon and tostring(fallbackIcon) ~= "" then
                     macroEntry.icon = tostring(fallbackIcon)
                 end
             end
-            if tostring(macroEntry.icon or "") == "" then
+            local iconAfterFallback = tostring(macroEntry.icon or "")
+            if iconAfterFallback == "" or iconAfterFallback == "0" or iconAfterFallback:lower():find("^https?://") then
                 local sourceSpellId = tonumber(macroEntry.sourceSpellId or "")
                 local sourceSpellName = tostring(macroEntry.sourceSpellName or "")
                 if sourceSpellId and sourceSpellId > 0 then
@@ -4094,6 +4196,7 @@ local function buildViewerData(profile)
                         macroEntry.icon = tostring(tex)
                     end
                 end
+            end
             end
         end
     end
@@ -4523,61 +4626,64 @@ local function refreshViewerFrame(frame)
     ))
 
     local keyToEntries, slotData, macroEntries = buildViewerData(profile)
-    if canRefreshViewerFromGame(frame.profileName) then
-        overlayLiveViewerBarData(profile, slotData)
-        keyToEntries = {}
-        for slot = 1, 60 do
-            local entry = slotData[slot]
-            if entry and entry.key and entry.key ~= "" then
-                local normalizedEntryKey = normalizeKey(entry.key)
-                local baseKey = normalizedEntryKey
-                local changed = true
-                while changed and baseKey and baseKey ~= "" do
-                    changed = false
-                    if baseKey:find("^SHIFT%-") then
-                        baseKey = baseKey:gsub("^SHIFT%-", "")
-                        changed = true
-                    elseif baseKey:find("^CTRL%-") then
-                        baseKey = baseKey:gsub("^CTRL%-", "")
-                        changed = true
-                    elseif baseKey:find("^ALT%-") then
-                        baseKey = baseKey:gsub("^ALT%-", "")
-                        changed = true
-                    end
-                end
-                if baseKey and baseKey ~= "" then
-                    keyToEntries[baseKey] = keyToEntries[baseKey] or {}
-                    table.insert(keyToEntries[baseKey], {
-                        key = tostring(entry.key or ""),
-                        spellName = tostring(entry.spellName or "-"),
-                        icon = entry.icon,
-                        slot = slot,
-                    })
+    -- Always preview current live bars/bindings in viewer.
+    overlayLiveViewerBarData(profile, slotData)
+    keyToEntries = {}
+    for slot = 1, 60 do
+        local entry = slotData[slot]
+        if entry and entry.key and entry.key ~= "" then
+            local normalizedEntryKey = normalizeKey(entry.key)
+            local baseKey = normalizedEntryKey
+            local changed = true
+            while changed and baseKey and baseKey ~= "" do
+                changed = false
+                if baseKey:find("^SHIFT%-") then
+                    baseKey = baseKey:gsub("^SHIFT%-", "")
+                    changed = true
+                elseif baseKey:find("^CTRL%-") then
+                    baseKey = baseKey:gsub("^CTRL%-", "")
+                    changed = true
+                elseif baseKey:find("^ALT%-") then
+                    baseKey = baseKey:gsub("^ALT%-", "")
+                    changed = true
                 end
             end
-        end
-        local liveMacroEntries, liveBySignature = buildLiveMacroEntriesFromBars(slotData)
-        if #liveMacroEntries > 0 then
-            for _, macro in ipairs(macroEntries or {}) do
-                local signature = macroEntrySignature(macro)
-                if signature ~= "" and not liveBySignature[signature] then
-                    liveMacroEntries[#liveMacroEntries + 1] = macro
-                end
+            if baseKey and baseKey ~= "" then
+                keyToEntries[baseKey] = keyToEntries[baseKey] or {}
+                table.insert(keyToEntries[baseKey], {
+                    key = tostring(entry.key or ""),
+                    spellName = tostring(entry.spellName or "-"),
+                    icon = entry.icon,
+                    slot = slot,
+                })
             end
-            table.sort(liveMacroEntries, function(a, b)
-                return tostring(a and a.name or ""):lower() < tostring(b and b.name or ""):lower()
-            end)
-            macroEntries = liveMacroEntries
         end
+    end
+    local liveMacroEntries, liveBySignature = buildLiveMacroEntriesFromBars(slotData)
+    if #liveMacroEntries > 0 then
+        for _, macro in ipairs(macroEntries or {}) do
+            local signature = macroEntrySignature(macro)
+            if signature ~= "" and not liveBySignature[signature] then
+                liveMacroEntries[#liveMacroEntries + 1] = macro
+            end
+        end
+        table.sort(liveMacroEntries, function(a, b)
+            return tostring(a and a.name or ""):lower() < tostring(b and b.name or ""):lower()
+        end)
+        macroEntries = liveMacroEntries
     end
     macroEntries = filterMacroEntriesForDisplay(macroEntries)
 
     if frame.refreshBtn then
-        if canRefreshViewerFromGame(frame.profileName) then
-            frame.refreshBtn:Show()
+        local canSave = canSaveViewerBarsToProfile(frame.profileName)
+        if canSave then
+            frame.refreshBtn:Enable()
+            frame.refreshBtn:SetAlpha(1)
         else
-            frame.refreshBtn:Hide()
+            frame.refreshBtn:Disable()
+            frame.refreshBtn:SetAlpha(0.5)
         end
+        frame.refreshBtn:Show()
     end
 
     if frame.applyBtn then
@@ -4686,11 +4792,6 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         return
     end
 
-    -- Only allow live capture for the active profile to avoid overwriting imported/off-class profiles.
-    if canRefreshViewerFromGame(target) then
-        syncProfileSnapshotFromGame(target)
-    end
-
     if viewerFrame and viewerFrame:IsShown() then
         viewerFrame:Hide()
     end
@@ -4721,7 +4822,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-        subtitle:SetText("Viewing stored WoWKeyb profile data (live syncing disabled).")
+        subtitle:SetText("Viewing current live bars/bindings. Save Current Bars works only for the active matching profile.")
 
         local metaText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
@@ -4931,23 +5032,34 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         viewerFrame.macroEmptyText = macroEmptyText
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
-        refreshBtn:SetSize(150, 22)
+        refreshBtn:SetSize(170, 22)
         refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 150, 18)
-        refreshBtn:SetText("Refresh From Game")
+        refreshBtn:SetText("Save Current Bars")
         refreshBtn:SetScript("OnClick", function()
             local targetProfile = viewerFrame and viewerFrame.profileName
             if not targetProfile then
-                print("|cffff0000[WoWKeyb]|r No selected profile to refresh.")
+                print("|cffff0000[WoWKeyb]|r No selected profile to save.")
                 return
             end
-            if not canRefreshViewerFromGame(targetProfile) then
-                print("|cffffcc00[WoWKeyb]|r Refresh From Game is only available for the active matching class/spec/hero profile.")
+            local canSave, reason = canSaveViewerBarsToProfile(targetProfile)
+            if not canSave then
+                if reason == "not-active-profile" then
+                    print("|cffffcc00[WoWKeyb]|r Save Current Bars is only available for the currently active profile.")
+                elseif reason == "class-mismatch" or reason == "spec-hero-mismatch" then
+                    print("|cffffcc00[WoWKeyb]|r Save Current Bars requires the selected profile to match current class/spec/hero.")
+                else
+                    print("|cffff0000[WoWKeyb]|r Cannot save current bars for this profile.")
+                end
                 return
             end
-            local syncResult = syncProfileSnapshotFromGame(targetProfile)
+            local syncResult = syncProfileSnapshotFromGame(targetProfile, { force = true })
+            if syncResult.blocked then
+                print("|cffff0000[WoWKeyb]|r Failed to save current bars: " .. tostring(syncResult.blockedReason or "unknown error"))
+                return
+            end
             refreshViewerFrame(viewerFrame)
             local statusColor = (syncResult.contextOk and syncResult.spellsOk and syncResult.layoutOk) and "|cff00ff00" or "|cffffcc00"
-            print(statusColor .. "[WoWKeyb]|r Refreshed from game: context "
+            print(statusColor .. "[WoWKeyb]|r Saved current bars to profile: context "
                 .. tostring(syncResult.contextChanged) .. ", spells/macros "
                 .. tostring(syncResult.spellsChanged) .. ", bindings "
                 .. tostring(syncResult.layoutChanged) .. ".")
@@ -4993,6 +5105,64 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 end
 
 local exportFrame
+local function computeExportSummaryCounts(profile)
+    local keybinds = (type(profile) == "table" and type(profile.keybinds) == "table") and profile.keybinds or {}
+    local keybindCount = #keybinds
+
+    local macroSeen = {}
+    local macroCount = 0
+    local function trimValue(value)
+        return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    end
+    local function addMacro(macroId, macroName, macroText)
+        local body = trimValue(macroText)
+        if body == "" then
+            return
+        end
+        local normalizedId = normalizeMacroId(macroId)
+        local signature = ""
+        if normalizedId ~= "" then
+            signature = "id:" .. normalizedId
+        else
+            signature = "body:" .. normalizeMacroBodyForMatch(body) .. "|name:" .. normalizeMacroNameForMatch(macroName)
+        end
+        if signature == "" or macroSeen[signature] then
+            return
+        end
+        macroSeen[signature] = true
+        macroCount = macroCount + 1
+    end
+
+    for _, kb in ipairs(keybinds) do
+        if type(kb) == "table" then
+            local spell = kb.spell or {}
+            local actionType = tostring(spell.actionType or spell.action_type or ""):lower()
+            local spellId = tostring(spell.spellId or spell.spell_id or "")
+            local isMacro = spell.isMacro == true or actionType == "macro" or spellId:lower():find("^macro:") ~= nil
+            if isMacro then
+                local macroId = spell.macroId or spell.macro_id or spellId
+                local macroName = spell.name or spell.macroName or spell.macro_name or "WoWKeybMacro"
+                local macroText = spell.macroText or spell.macro_text or spell.text or spell.body
+                addMacro(macroId, macroName, macroText)
+            end
+        end
+    end
+
+    if type(profile) == "table" and type(profile.macros) == "table" then
+        for _, macro in ipairs(profile.macros) do
+            if type(macro) == "table" then
+                addMacro(
+                    macro.id or macro.macroId or macro.macro_id,
+                    macro.name or macro.macroName or macro.macro_name or "WoWKeybMacro",
+                    macro.macroText or macro.macro_text or macro.text or macro.body
+                )
+            end
+        end
+    end
+
+    return keybindCount, macroCount
+end
+
 function WoWKeyb:ShowExportDialog(profileName)
     local profile = getStoredProfile(profileName)
     if not profile then
@@ -5056,9 +5226,15 @@ function WoWKeyb:ShowExportDialog(profileName)
         local subtitle = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOP", title, "BOTTOM", 0, -6)
         subtitle:SetText("Copy this share code and import it in WoWKeyb.")
+        exportFrame.subtitle = subtitle
+
+        local summary = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        summary:SetPoint("TOP", subtitle, "BOTTOM", 0, -6)
+        summary:SetText("")
+        exportFrame.summaryText = summary
 
         local scroll = CreateFrame("ScrollFrame", "WoWKeybExportScroll", exportFrame, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 20, -62)
+        scroll:SetPoint("TOPLEFT", 20, -84)
         scroll:SetPoint("BOTTOMRIGHT", -40, 60)
 
         local edit = CreateFrame("EditBox", "WoWKeybExportEdit", scroll)
@@ -5096,6 +5272,10 @@ function WoWKeyb:ShowExportDialog(profileName)
     end
 
     exportFrame:Show()
+    local keybindCount, macroCount = computeExportSummaryCounts(profile)
+    if exportFrame.summaryText then
+        exportFrame.summaryText:SetText(string.format("Keybinds included: %d    Macros included: %d", keybindCount, macroCount))
+    end
     WoWKeybExportEdit:SetText(shareCode)
     WoWKeybExportEdit:SetFocus()
     WoWKeybExportEdit:HighlightText()
@@ -5478,23 +5658,62 @@ local function createSettingsPanel()
     createBtn:SetPoint("TOPLEFT", newProfileEdit, "BOTTOMLEFT", 0, -6)
     createBtn:SetText("Create New")
 
-    local function createProfileFromInput()
+    local function validateNewProfileNameFromInput()
         local targetName = tostring(newProfileEdit:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if InCombatLockdown() then
             print("|cffff0000[WoWKeyb]|r Cannot create a new profile while in combat.")
-            return false
+            return nil
         end
         if targetName == "" then
             print("|cffff0000[WoWKeyb]|r New profile name cannot be empty.")
-            return false
+            return nil
         end
         if targetName == BLIZZARD_DEFAULT_PROFILE then
             print("|cffff0000[WoWKeyb]|r That name is reserved.")
-            return false
+            return nil
         end
         if WoWKeybDB.profiles[targetName] then
             print("|cffff0000[WoWKeyb]|r A profile with that name already exists.")
-            return false
+            return nil
+        end
+        return targetName
+    end
+
+    local function applyFreshBlizzardBarsAndBindings()
+        local cleared, clearErr = clearActionBarsAndBindings()
+        if not cleared then
+            return false, tostring(clearErr or "Failed to clear bars and bindings.")
+        end
+
+        clearCustomLayoutFrames()
+        applyBarModeVisibility(false)
+
+        -- Re-apply Blizzard-style primary bar defaults:
+        -- ActionButton1..12 => 1,2,3,4,5,6,7,8,9,0,-,=
+        local defaultMainBarKeys = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=" }
+        for slot = 1, 12 do
+            local command = SLOT_COMMANDS[slot]
+            local key = defaultMainBarKeys[slot]
+            if command and key and key ~= "" then
+                SetBinding(key, command)
+            end
+        end
+
+        if type(GetCurrentBindingSet) == "function" and type(SaveBindings) == "function" then
+            local bindingSet = GetCurrentBindingSet()
+            SaveBindings(bindingSet)
+        end
+
+        return true
+    end
+
+    local function createProfileWithMode(targetName, mode)
+        if mode == "fresh" then
+            local freshOk, freshErr = applyFreshBlizzardBarsAndBindings()
+            if not freshOk then
+                print("|cffff0000[WoWKeyb]|r " .. tostring(freshErr or "Failed to apply Blizzard default bars and keybindings."))
+                return false
+            end
         end
 
         WoWKeybDB.profiles[targetName] = buildDefaultProfileState(targetName, nil)
@@ -5512,12 +5731,21 @@ local function createSettingsPanel()
         WoWKeybDB.currentProfile = targetName
         setPreferredProfileForCurrentContext(targetName)
 
-        local cleared, clearErr = clearActionBarsAndBindings()
-        if not cleared then
-            print("|cffff0000[WoWKeyb]|r " .. tostring(clearErr or "Failed to clear bars and bindings."))
-            return false
+        if mode == "current" then
+            local syncResult = syncProfileSnapshotFromGame(targetName, { force = true })
+            if syncResult and not syncResult.blocked then
+                print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName)
+                    .. " from current action bars.")
+            else
+                print("|cffffcc00[WoWKeyb]|r Created profile: " .. tostring(targetName)
+                    .. ", but saving current bars failed. Open View Keybinding Map and click Save Current Bars.")
+            end
+        elseif mode == "fresh" then
+            print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName)
+                .. " with fresh bars and Blizzard default keybindings.")
+        else
+            print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName))
         end
-        print("|cff00ff00[WoWKeyb]|r Created profile: " .. tostring(targetName) .. " (bars and action-bar bindings cleared).")
 
         newProfileEdit:SetText("")
         refreshProfileSelector()
@@ -5525,8 +5753,40 @@ local function createSettingsPanel()
         return true
     end
 
+    if not StaticPopupDialogs["WOWKEYB_CREATE_PROFILE_MODE"] then
+        StaticPopupDialogs["WOWKEYB_CREATE_PROFILE_MODE"] = {
+            text = "Create profile \"%s\" from current action bars, or make fresh (clear bars + Blizzard default keybinds)?",
+            button1 = "From Current Bars",
+            button2 = "Make Fresh",
+            OnAccept = function(_, data)
+                local targetName = type(data) == "table" and data.targetName or nil
+                if targetName and targetName ~= "" then
+                    createProfileWithMode(targetName, "current")
+                end
+            end,
+            OnCancel = function(_, data, reason)
+                -- button2 click should create fresh; escape/close should cancel.
+                if tostring(reason or "") ~= "clicked" then
+                    return
+                end
+                local targetName = type(data) == "table" and data.targetName or nil
+                if targetName and targetName ~= "" then
+                    createProfileWithMode(targetName, "fresh")
+                end
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+
     createBtn:SetScript("OnClick", function()
-        createProfileFromInput()
+        local targetName = validateNewProfileNameFromInput()
+        if not targetName then
+            return
+        end
+        StaticPopup_Show("WOWKEYB_CREATE_PROFILE_MODE", targetName, nil, { targetName = targetName })
     end)
 
     duplicateBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
