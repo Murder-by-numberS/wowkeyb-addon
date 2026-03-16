@@ -1512,6 +1512,19 @@ local function extractMacroPayload(spell, macroLookup)
     local macroName = spell.name or spell.macroName or spell.macro_name or "WoWKeybMacro"
     local payloadSource = "spell"
 
+    local resolvedFromLookup = nil
+    if macroLookup then
+        if macroId ~= "" and macroLookup.byId[macroId] then
+            resolvedFromLookup = macroLookup.byId[macroId]
+        end
+        if (not resolvedFromLookup) and (macroName and tostring(macroName):trim() ~= "") then
+            local normalizedLookupName = normalizeSpellText(macroName)
+            if normalizedLookupName ~= "" and macroLookup.byName[normalizedLookupName] then
+                resolvedFromLookup = macroLookup.byName[normalizedLookupName]
+            end
+        end
+    end
+
     if (not macroText or tostring(macroText):trim() == "") and macroLookup then
         if macroId ~= "" and macroLookup.byId[macroId] then
             macroText = macroLookup.byId[macroId].body
@@ -1545,6 +1558,24 @@ local function extractMacroPayload(spell, macroLookup)
                 end
                 payloadSource = "profile-by-name"
             end
+        end
+    end
+
+    -- Even when body already exists, prefer richer stored macro metadata (name/icon/source spell)
+    -- over generic fallback values for cross-profile viewing.
+    if resolvedFromLookup then
+        if isGenericMacroName(macroName) and resolvedFromLookup.name and tostring(resolvedFromLookup.name):trim() ~= "" then
+            macroName = tostring(resolvedFromLookup.name)
+        end
+        if (not resolvedIcon or tostring(resolvedIcon) == "" or tostring(resolvedIcon) == "0")
+            and resolvedFromLookup.icon and tostring(resolvedFromLookup.icon) ~= "" then
+            resolvedIcon = tostring(resolvedFromLookup.icon)
+        end
+        if sourceSpellId == "" and resolvedFromLookup.sourceSpellId and tostring(resolvedFromLookup.sourceSpellId) ~= "" then
+            sourceSpellId = tostring(resolvedFromLookup.sourceSpellId)
+        end
+        if sourceSpellName == "" and resolvedFromLookup.sourceSpellName and tostring(resolvedFromLookup.sourceSpellName) ~= "" then
+            sourceSpellName = tostring(resolvedFromLookup.sourceSpellName)
         end
     end
 
