@@ -4269,12 +4269,18 @@ local function setBarViewerCell(cell, key, spellName, icon)
 
     local iconRef = nil
     if icon and tostring(icon) ~= "" and tostring(icon) ~= "0" and not tostring(icon):lower():find("^https?://") then
-        local numeric = tonumber(icon)
+        local iconText = tostring(icon):gsub("^%s+", ""):gsub("%s+$", "")
+        local numeric = tonumber(iconText)
         if numeric and numeric > 0 then
             iconRef = numeric
-        else
-            iconRef = icon
+        elseif iconText:find("\\", 1, true) then
+            iconRef = iconText
+        elseif iconText ~= "" then
+            iconRef = "Interface\\Icons\\" .. iconText
         end
+    end
+    if (not iconRef) and cell.viewerSpellName and cell.viewerSpellName ~= "-" and cell.viewerSpellName ~= "" then
+        iconRef = "Interface\\Icons\\INV_Misc_QuestionMark"
     end
     cell.viewerIcon = iconRef
     if iconRef then
@@ -4449,7 +4455,11 @@ local function setMacroViewerCell(cell, macro)
     end
     local textureRef = tonumber(icon)
     if not textureRef or textureRef <= 0 then
-        textureRef = icon
+        if icon:find("\\", 1, true) then
+            textureRef = icon
+        else
+            textureRef = "Interface\\Icons\\" .. icon
+        end
     end
     cell.icon:SetTexture(textureRef)
     cell.icon:Show()
@@ -4632,12 +4642,18 @@ local function setKeyboardViewerCell(cell, key, entries)
     local iconRef = nil
     if first and first.icon and tostring(first.icon) ~= "" and tostring(first.icon) ~= "0"
         and not tostring(first.icon):lower():find("^https?://") then
-        local numeric = tonumber(first.icon)
+        local iconText = tostring(first.icon):gsub("^%s+", ""):gsub("%s+$", "")
+        local numeric = tonumber(iconText)
         if numeric and numeric > 0 then
             iconRef = numeric
-        else
-            iconRef = first.icon
+        elseif iconText:find("\\", 1, true) then
+            iconRef = iconText
+        elseif iconText ~= "" then
+            iconRef = "Interface\\Icons\\" .. iconText
         end
+    end
+    if (not iconRef) and #list > 0 then
+        iconRef = "Interface\\Icons\\INV_Misc_QuestionMark"
     end
     if iconRef then
         cell.icon:SetTexture(iconRef)
