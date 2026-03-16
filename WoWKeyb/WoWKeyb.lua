@@ -4627,16 +4627,136 @@ local function filterMacroEntriesForDisplay(entries)
     if type(entries) ~= "table" then
         return {}
     end
-    local used = {}
-    local unused = {}
+    local function trim(value)
+        return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    end
+    local function hasUsableIcon(value)
+        local icon = trim(value)
+        return icon ~= "" and icon ~= "0" and not icon:lower():find("^https?://")
+    end
+    local function entryQuality(entry)
+        if type(entry) ~= "table" then
+            return 0
+        end
+        local score = 0
+        local name = trim(entry.name)
+        if name ~= "" and not isGenericMacroName(name) then
+            score = score + 100
+        end
+        if trim(entry.body) ~= "" then
+            score = score + 60
+        end
+        if hasUsableIcon(entry.icon) then
+            score = score + 20
+        end
+        if trim(entry.sourceSpellId) ~= "" or trim(entry.sourceSpellName) ~= "" then
+            score = score + 10
+        end
+        return score
+    end
+    local function addMissingFields(target, source)
+        if type(target) ~= "table" or type(source) ~= "table" then return end
+        if (trim(target.name) == "" or isGenericMacroName(target.name)) and trim(source.name) ~= "" and not isGenericMacroName(source.name) then
+            target.name = tostring(source.name)
+        end
+        if trim(target.body) == "" and trim(source.body) ~= "" then
+            target.body = tostring(source.body)
+        end
+        if not hasUsableIcon(target.icon) and hasUsableIcon(source.icon) then
+            target.icon = tostring(source.icon)
+        end
+        if trim(target.sourceSpellId) == "" and trim(source.sourceSpellId) ~= "" then
+            target.sourceSpellId = tostring(source.sourceSpellId)
+        end
+        if trim(target.sourceSpellName) == "" and trim(source.sourceSpellName) ~= "" then
+            target.sourceSpellName = tostring(source.sourceSpellName)
+        end
+        local targetUsages = type(target.usages) == "table" and target.usages or {}
+        local sourceUsages = type(source.usages) == "table" and source.usages or {}
+        local seen = {}
+        for _, usage in ipairs(targetUsages) do
+            seen[tostring(usage)] = true
+        end
+        for _, usage in ipairs(sourceUsages) do
+            local key = tostring(usage)
+            if not seen[key] then
+                targetUsages[#targetUsages + 1] = key
+                seen[key] = true
+            end
+        end
+        target.usages = targetUsages
+    end
+
+    -- First, collapse entries that point to the same usage slot(s), preferring richer metadata.
+    local byUsageSignature = {}
+    local usageCollapsed = {}
     for _, entry in ipairs(entries) do
+        if type(entry) == "table" then
+            local usages = type(entry.usages) == "table" and entry.usages or {}
+            if #usages > 0 then
+                local sorted = {}
+                for _, usage in ipairs(usages) do
+                    sorted[#sorted + 1] = tostring(usage)
+                end
+                table.sort(sorted)
+                local usageSignature = table.concat(sorted, " | ")
+                local existing = byUsageSignature[usageSignature]
+                if not existing then
+                    byUsageSignature[usageSignature] = entry
+                    usageCollapsed[#usageCollapsed + 1] = entry
+                else
+                    if entryQuality(entry) > entryQuality(existing) then
+                        addMissingFields(entry, existing)
+                        byUsageSignature[usageSignature] = entry
+                        for idx, value in ipairs(usageCollapsed) do
+                            if value == existing then
+                                usageCollapsed[idx] = entry
+                                break
+                            end
+                        end
+                    else
+                        addMissingFields(existing, entry)
+                    end
+                end
+            else
+                usageCollapsed[#usageCollapsed + 1] = entry
+            end
+        end
+    end
+
+    local used = {}
+    local unusedBySignature = {}
+    local unused = {}
+    for _, entry in ipairs(usageCollapsed) do
         local usageCount = (type(entry) == "table" and type(entry.usages) == "table") and #entry.usages or 0
         if usageCount > 0 then
             used[#used + 1] = entry
         else
-            unused[#unused + 1] = entry
+            local signature = macroEntrySignature(entry)
+            if signature == "" then
+                signature = "name:" .. normalizeMacroNameForMatch(entry and entry.name or "")
+            end
+            local existing = unusedBySignature[signature]
+            if not existing then
+                unusedBySignature[signature] = entry
+                unused[#unused + 1] = entry
+            else
+                if entryQuality(entry) > entryQuality(existing) then
+                    addMissingFields(entry, existing)
+                    unusedBySignature[signature] = entry
+                    for idx, value in ipairs(unused) do
+                        if value == existing then
+                            unused[idx] = entry
+                            break
+                        end
+                    end
+                else
+                    addMissingFields(existing, entry)
+                end
+            end
         end
     end
+
     if #used > 0 then
         return used
     end
