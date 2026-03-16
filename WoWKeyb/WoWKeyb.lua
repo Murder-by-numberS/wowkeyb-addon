@@ -1778,6 +1778,8 @@ local function resolveMacroIconForPayload(payload, macroIndex)
     return nil
 end
 
+local wowBindingToProfileKey
+
 local function syncProfileSpellsFromActionBars(profileName)
     ensureDBDefaults()
     local targetName = profileName or WoWKeybDB.currentProfile
@@ -1976,7 +1978,7 @@ local function syncProfileSpellsFromActionBars(profileName)
     return true, changed
 end
 
-local function wowBindingToProfileKey(bindingKey)
+wowBindingToProfileKey = function(bindingKey)
     if not bindingKey or bindingKey == "" then
         return ""
     end
