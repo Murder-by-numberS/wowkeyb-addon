@@ -5541,15 +5541,31 @@ function WoWKeyb:ShowExportDialog(profileName)
         scroll:SetScrollChild(edit)
         exportFrame.editBox = edit
 
-        local selectBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
-        selectBtn:SetSize(150, 22)
-        selectBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", 90, 20)
-        selectBtn:SetText("Select All")
-        selectBtn:SetScript("OnClick", function()
+        local copyBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
+        copyBtn:SetSize(150, 22)
+        copyBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", 90, 20)
+        copyBtn:SetText("Copy All")
+        copyBtn:SetScript("OnClick", function()
+            local text = exportFrame and exportFrame.editBox and exportFrame.editBox:GetText() or ""
+            local copied = false
+            if text ~= "" and C_Clipboard then
+                if type(C_Clipboard.SetClipboard) == "function" then
+                    local okSet = pcall(C_Clipboard.SetClipboard, text)
+                    copied = okSet == true
+                elseif type(C_Clipboard.CopyToClipboard) == "function" then
+                    local okCopy = pcall(C_Clipboard.CopyToClipboard, text)
+                    copied = okCopy == true
+                end
+            end
+            if copied then
+                print("|cff00ff00[WoWKeyb]|r Export share code copied to clipboard.")
+                return
+            end
             if exportFrame.editBox then
                 exportFrame.editBox:SetFocus()
                 exportFrame.editBox:HighlightText()
             end
+            print("|cffffcc00[WoWKeyb]|r Clipboard API unavailable. Press Ctrl/Cmd+C to copy the highlighted share code.")
         end)
 
         local closeBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
@@ -5910,7 +5926,6 @@ local function createSettingsPanel()
         local statusLines = {
             string.format("Character setup: %s / %s / %s", tostring(classLabel), tostring(specLabel), tostring(heroLabel)),
             string.format("Context key: %s", tostring(contextKey)),
-            "Selection mode: Manual (no auto-switch)",
             string.format("Profiles for this setup (%d): %s", #matchingProfiles, summarizeNames(matchingProfiles, 6)),
             "",
         }
