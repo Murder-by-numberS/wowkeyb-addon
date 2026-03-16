@@ -4443,6 +4443,7 @@ local function setMacroViewerCell(cell, macro)
 
     cell.viewerMacro = macro
     local icon = tostring(macro.icon or "")
+    icon = icon:gsub("^%s+", ""):gsub("%s+$", "")
     if icon == "" or icon == "0" or icon:lower():find("^https?://") then
         icon = "INV_MISC_QUESTIONMARK"
     end
@@ -4616,6 +4617,14 @@ local function setKeyboardViewerCell(cell, key, entries)
     local cleanKey = (key and key ~= "") and key or "-"
     local list = entries or {}
     local first = list[1]
+    for _, candidate in ipairs(list) do
+        local candidateIcon = candidate and candidate.icon and tostring(candidate.icon) or ""
+        candidateIcon = candidateIcon:gsub("^%s+", ""):gsub("%s+$", "")
+        if candidateIcon ~= "" and candidateIcon ~= "0" and not candidateIcon:lower():find("^https?://") then
+            first = candidate
+            break
+        end
+    end
     cell.viewerKey = cleanKey
     cell.viewerEntries = list
     cell.keyText:SetText(cleanKey)
@@ -4693,12 +4702,14 @@ local function refreshViewerFrame(frame)
 
         -- Include all live bindings for this slot command so secondary binds (e.g. G)
         -- appear in the keyboard map even when a different primary bind exists.
-        local command = SLOT_COMMANDS[slot]
-        if command and command ~= "" then
-            local keys = { GetBindingKey(command) }
-            for _, rawWowKey in ipairs(keys) do
-                if rawWowKey and rawWowKey ~= "" then
-                    addKeyCandidate(wowBindingToProfileKey(rawWowKey))
+        if showLiveOverlay then
+            local command = SLOT_COMMANDS[slot]
+            if command and command ~= "" then
+                local keys = { GetBindingKey(command) }
+                for _, rawWowKey in ipairs(keys) do
+                    if rawWowKey and rawWowKey ~= "" then
+                        addKeyCandidate(wowBindingToProfileKey(rawWowKey))
+                    end
                 end
             end
         end
