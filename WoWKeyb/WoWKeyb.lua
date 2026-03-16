@@ -1159,8 +1159,36 @@ local function readMacroFromActionSlot(slot)
         return nil
     end
 
-    local macroName, macroIcon, macroBody = GetMacroInfo(actionId)
-    local macroId = tostring(actionId or "")
+    local macroIndex = nil
+    local macroName, macroIcon, macroBody = nil, nil, nil
+    local function hasMacroPayload(nameValue, iconValue, bodyValue)
+        return (nameValue and tostring(nameValue) ~= "")
+            or (iconValue and tostring(iconValue) ~= "" and tostring(iconValue) ~= "0")
+            or (bodyValue and tostring(bodyValue) ~= "")
+    end
+    local numericActionId = tonumber(actionId)
+    if numericActionId then
+        local n, i, b = GetMacroInfo(numericActionId)
+        if hasMacroPayload(n, i, b) then
+            macroIndex = numericActionId
+            macroName, macroIcon, macroBody = n, i, b
+        end
+    end
+    if not macroIndex and type(GetActionText) == "function" and type(GetMacroIndexByName) == "function" then
+        local actionText = tostring(GetActionText(slot) or "")
+        if actionText ~= "" then
+            local byName = GetMacroIndexByName(actionText)
+            if byName and tonumber(byName) and tonumber(byName) > 0 then
+                macroIndex = tonumber(byName)
+                macroName, macroIcon, macroBody = GetMacroInfo(macroIndex)
+            end
+            if (not macroName or tostring(macroName) == "") and actionText ~= "" then
+                macroName = actionText
+            end
+        end
+    end
+
+    local macroId = tostring(macroIndex or actionId or "")
     local macroText = tostring(macroBody or "")
     if (not macroIcon or tostring(macroIcon) == "" or tostring(macroIcon) == "0") and type(GetActionTexture) == "function" then
         local actionTexture = GetActionTexture(slot)
@@ -1856,14 +1884,22 @@ local function syncProfileSpellsFromActionBars(profileName)
         if actionType == "macro" then
             local barMacro = readMacroFromActionSlot(actionSlot)
             if barMacro then
+                local macroName = tostring(barMacro.name or "")
+                if isGenericMacroName(macroName) and not isGenericMacroName(previousSpell.name) then
+                    macroName = tostring(previousSpell.name or macroName)
+                end
+                local macroText = tostring(barMacro.macroText or "")
+                if macroText == "" then
+                    macroText = tostring(previousSpell.macroText or previousSpell.macro_text or previousSpell.text or previousSpell.body or "")
+                end
                 nextSpell = {
                     spellId = barMacro.spellId,
-                    name = barMacro.name,
+                    name = macroName ~= "" and macroName or "WoWKeybMacro",
                     icon = barMacro.icon,
                     actionType = "macro",
                     isMacro = true,
                     macroId = barMacro.macroId,
-                    macroText = barMacro.macroText,
+                    macroText = macroText,
                     sourceSpellId = previousSpell.sourceSpellId or previousSpell.source_spell_id or "",
                     sourceSpellName = previousSpell.sourceSpellName or previousSpell.source_spell_name or "",
                 }
