@@ -2609,6 +2609,10 @@ local function applySelectionByName(target)
             setCurrentProfile(target)
         end
         setPreferredProfileForCurrentContext(target)
+
+        -- After a successful apply, immediately snapshot the stored profile from game
+        -- so viewer/export reflects the latest applied bars, keys, and macros.
+        syncProfileSnapshotFromGame(target, { force = true })
     end
     return ok, result
 end
