@@ -66,6 +66,9 @@ local function ensureDBDefaults()
     if type(WoWKeybDB.preferredProfileByContext) ~= "table" then
         WoWKeybDB.preferredProfileByContext = {}
     end
+    if type(WoWKeybDB.lastProfileByCharacter) ~= "table" then
+        WoWKeybDB.lastProfileByCharacter = {}
+    end
     if WoWKeybDB.debugApplySlots == nil then
         WoWKeybDB.debugApplySlots = false
     end
@@ -80,6 +83,60 @@ local function ensureDBDefaults()
         WoWKeybDB.minimap.minimapPos = tonumber(WoWKeybDB.minimap.angle) or 225
     end
     WoWKeybDB.minimap.angle = nil
+end
+
+local function getCurrentCharacterProfileKey()
+    local characterName = UnitName and UnitName("player") or nil
+    local realmName = GetRealmName and GetRealmName() or nil
+    if type(characterName) ~= "string" or characterName == "" then
+        return nil
+    end
+    if type(realmName) ~= "string" or realmName == "" then
+        realmName = "unknown"
+    end
+    return tostring(characterName):lower() .. "-" .. tostring(realmName):lower()
+end
+
+local function rememberCurrentProfileForCharacter(profileName)
+    ensureDBDefaults()
+    local characterKey = getCurrentCharacterProfileKey()
+    if not characterKey then
+        return
+    end
+    local storedProfile = tostring(profileName or "")
+    if storedProfile == "" then
+        storedProfile = BLIZZARD_DEFAULT_PROFILE
+    end
+    WoWKeybDB.lastProfileByCharacter[characterKey] = storedProfile
+end
+
+local function setCurrentProfile(profileName, persistCharacterSelection)
+    ensureDBDefaults()
+    local resolved = tostring(profileName or "")
+    if resolved == "" then
+        resolved = BLIZZARD_DEFAULT_PROFILE
+    end
+    WoWKeybDB.currentProfile = resolved
+    if persistCharacterSelection ~= false then
+        rememberCurrentProfileForCharacter(resolved)
+    end
+end
+
+local function restoreCurrentProfileForCharacter()
+    ensureDBDefaults()
+    local characterKey = getCurrentCharacterProfileKey()
+    if not characterKey then
+        return
+    end
+    local saved = WoWKeybDB.lastProfileByCharacter[characterKey]
+    if type(saved) ~= "string" or saved == "" then
+        return
+    end
+    if saved == BLIZZARD_DEFAULT_PROFILE or WoWKeybDB.profiles[saved] then
+        setCurrentProfile(saved, false)
+        return
+    end
+    setCurrentProfile(BLIZZARD_DEFAULT_PROFILE, false)
 end
 
 local function buildCurrentPlayerContextKey()
@@ -2493,7 +2550,7 @@ local function applyBlizzardDefaultProfile()
     }
     if WoWKeybDB.currentProfile ~= BLIZZARD_DEFAULT_PROFILE then
         WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-        WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+        setCurrentProfile(BLIZZARD_DEFAULT_PROFILE)
     end
     return true, "Applied Blizzard default bars"
 end
@@ -2549,7 +2606,7 @@ local function applySelectionByName(target)
         -- Keep active profile pointer tied to the stored profile key used for selection.
         if WoWKeybDB.currentProfile ~= target then
             WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-            WoWKeybDB.currentProfile = target
+            setCurrentProfile(target)
         end
         setPreferredProfileForCurrentContext(target)
     end
@@ -3109,7 +3166,7 @@ applyProfile = function(profile)
     -- Update toggle history (current <-> previous)
     if WoWKeybDB.currentProfile ~= profileName then
         WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-        WoWKeybDB.currentProfile = profileName
+        setCurrentProfile(profileName)
     end
 
     WoWKeyb.isApplyingProfile = false
@@ -3208,7 +3265,7 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
 
     local current = tostring(WoWKeybDB.currentProfile or "")
     if current == "" then
-        WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+        setCurrentProfile(BLIZZARD_DEFAULT_PROFILE, false)
         return
     end
     if current == BLIZZARD_DEFAULT_PROFILE then
@@ -3232,7 +3289,7 @@ local function enforceCurrentProfileForPlayerContext(triggerEvent)
     end
 
     WoWKeybDB.previousProfile = current
-    WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+    setCurrentProfile(BLIZZARD_DEFAULT_PROFILE, false)
 
     local announce = shouldAnnounceContextAutoSwitch(triggerEvent)
     if announce then
@@ -6046,7 +6103,7 @@ local function createSettingsPanel()
         end
         selectedProfileName = targetName
         WoWKeybDB.previousProfile = WoWKeybDB.currentProfile
-        WoWKeybDB.currentProfile = targetName
+        setCurrentProfile(targetName)
         setPreferredProfileForCurrentContext(targetName)
 
         if mode == "current" then
@@ -6317,7 +6374,7 @@ local function createSettingsPanel()
         WoWKeybDB.profiles[sourceName] = nil
 
         if WoWKeybDB.currentProfile == sourceName then
-            WoWKeybDB.currentProfile = targetName
+            setCurrentProfile(targetName)
         end
         if WoWKeybDB.previousProfile == sourceName then
             WoWKeybDB.previousProfile = targetName
@@ -6448,16 +6505,16 @@ local function createSettingsPanel()
         print("|cff00ff00[WoWKeyb]|r Deleted profile: " .. tostring(target))
 
         if WoWKeybDB.currentProfile == target then
-            WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+            setCurrentProfile(BLIZZARD_DEFAULT_PROFILE)
             if WoWKeybDB.previousProfile and WoWKeybDB.profiles[WoWKeybDB.previousProfile] then
-                WoWKeybDB.currentProfile = WoWKeybDB.previousProfile
+                setCurrentProfile(WoWKeybDB.previousProfile)
             end
         end
         if WoWKeybDB.previousProfile == target then
             WoWKeybDB.previousProfile = BLIZZARD_DEFAULT_PROFILE
         end
         if not WoWKeybDB.currentProfile then
-            WoWKeybDB.currentProfile = BLIZZARD_DEFAULT_PROFILE
+            setCurrentProfile(BLIZZARD_DEFAULT_PROFILE)
         end
         selectedProfileName = WoWKeybDB.currentProfile
 
@@ -7299,6 +7356,7 @@ do
     initFrame:RegisterEvent("PLAYER_LOGIN")
     initFrame:SetScript("OnEvent", function(_, event)
         if event == "PLAYER_LOGIN" then
+            restoreCurrentProfileForCharacter()
             createSettingsPanel()
             createMinimapButton()
             ensureShareLinkHook()
