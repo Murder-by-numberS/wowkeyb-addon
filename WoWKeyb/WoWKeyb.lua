@@ -705,11 +705,17 @@ for i = 1, 12 do SLOT_COMMANDS[12 + i] = "MULTIACTIONBAR1BUTTON" .. i end
 for i = 1, 12 do SLOT_COMMANDS[24 + i] = "MULTIACTIONBAR2BUTTON" .. i end
 for i = 1, 12 do SLOT_COMMANDS[36 + i] = "MULTIACTIONBAR3BUTTON" .. i end
 for i = 1, 12 do SLOT_COMMANDS[48 + i] = "MULTIACTIONBAR4BUTTON" .. i end
+for i = 1, 12 do SLOT_COMMANDS[60 + i] = "MULTIACTIONBAR5BUTTON" .. i end
+for i = 1, 12 do SLOT_COMMANDS[72 + i] = "MULTIACTIONBAR6BUTTON" .. i end
+for i = 1, 12 do SLOT_COMMANDS[84 + i] = "MULTIACTIONBAR7BUTTON" .. i end
+
+local VIEWER_BAR_COUNT = 8
+local VIEWER_SLOT_COUNT = VIEWER_BAR_COUNT * 12
 
 -- Convert logical WoWKeyb slot (1..60 across bars 1..5) to Blizzard action slot IDs
 -- used by PlaceAction/GetActionInfo.
 local function toBlizzardActionSlot(slot)
-    if not slot or slot < 1 or slot > 60 then return slot end
+    if not slot or slot < 1 or slot > 96 then return slot end
     local bar = math.floor((slot - 1) / 12) + 1
     local idx = ((slot - 1) % 12) + 1
     if bar == 1 then
@@ -722,6 +728,12 @@ local function toBlizzardActionSlot(slot)
         return 24 + idx -- MultiBarRight: 25..36
     elseif bar == 5 then
         return 36 + idx -- MultiBarLeft: 37..48
+    elseif bar == 6 then
+        return 144 + idx -- MultiBar5: 145..156
+    elseif bar == 7 then
+        return 156 + idx -- MultiBar6: 157..168
+    elseif bar == 8 then
+        return 168 + idx -- MultiBar7: 169..180
     end
     return slot
 end
@@ -1174,7 +1186,7 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
 end
 
 local function readSpellFromActionSlot(slot)
-    if not slot or slot < 1 or slot > 120 then
+    if not slot or slot < 1 or slot > 180 then
         return nil
     end
 
@@ -1204,7 +1216,7 @@ local function readSpellFromActionSlot(slot)
 end
 
 local function readUtilityActionFromActionSlot(slot, actionTypeOverride, actionIdOverride)
-    if not slot or slot < 1 or slot > 120 then
+    if not slot or slot < 1 or slot > 180 then
         return nil
     end
 
@@ -1271,7 +1283,7 @@ local function readUtilityActionFromActionSlot(slot, actionTypeOverride, actionI
 end
 
 local function readMacroFromActionSlot(slot)
-    if not slot or slot < 1 or slot > 120 then
+    if not slot or slot < 1 or slot > 180 then
         return nil
     end
 
@@ -1576,6 +1588,14 @@ local function normalizeMacroNameForMatch(rawName)
     name = name:gsub("%s+", " ")
     name = name:lower()
     return name
+end
+
+local function normalizeMacroId(raw)
+    local value = tostring(raw or "")
+    if value == "" then
+        return ""
+    end
+    return value
 end
 
 local function isGenericMacroName(rawName)
@@ -3810,11 +3830,6 @@ local function serializeSyncedProfile(profileName, profile)
     local keybindChunks = {}
     local macroChunks = {}
     local macroById = {}
-    local function normalizeMacroId(raw)
-        local value = tostring(raw or "")
-        if value == "" then return "" end
-        return value
-    end
     local function collectMacro(macroId, macroName, macroText, sourceSpellId, sourceSpellName, macroIcon)
         local id = normalizeMacroId(macroId)
         local text = tostring(macroText or "")
@@ -4513,7 +4528,7 @@ local function setBarViewerCell(cell, key, spellName, icon)
 end
 
 local function readLiveViewerBarSlot(slot)
-    if not slot or slot < 1 or slot > 60 then
+    if not slot or slot < 1 or slot > VIEWER_SLOT_COUNT then
         return nil
     end
     local actionSlot = toBlizzardActionSlot(slot)
@@ -4576,7 +4591,7 @@ end
 
 local function buildLiveViewerSlotData()
     local slotData = {}
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local live = readLiveViewerBarSlot(slot)
         local keyValue = ""
         local command = SLOT_COMMANDS[slot]
@@ -4598,7 +4613,7 @@ local function overlayLiveViewerBarData(profile, slotData)
     end
     local bars = profile and profile.layout and profile.layout.bars or {}
 
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local live = readLiveViewerBarSlot(slot)
         local existing = slotData[slot] or { key = "", spellName = "-", icon = nil }
         local keyValue = tostring(existing.key or "")
@@ -4747,7 +4762,7 @@ local function buildLiveMacroEntriesFromBars(slotData)
     local entries = {}
     local bySignature = {}
 
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local actionSlot = toBlizzardActionSlot(slot)
         local actionType, actionId = GetActionInfo(actionSlot)
         if actionType == "macro" and actionId and type(GetMacroInfo) == "function" then
@@ -5001,7 +5016,7 @@ local function showKeyboardCellTooltip(cell)
             )
         end
     end
-    GameTooltip:AddLine("Drag to move. Right-click to clear this key.", 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Drag to move. Right-click to clear this key after confirming.", 0.8, 0.8, 0.8)
     if #extras > 0 then
         GameTooltip:AddLine("Other modifier layers", 0.95, 0.78, 0.35)
         for _, entry in ipairs(extras) do
@@ -5160,6 +5175,101 @@ local function wkSetViewerCellHover(f, hover)
     end
 end
 
+local function isViewerActionBarEnabled(barIndex)
+    if barIndex < 1 or barIndex > VIEWER_BAR_COUNT then
+        return false
+    end
+    if Settings and type(Settings.GetValue) == "function" then
+        local ok, value = pcall(Settings.GetValue, "PROXY_SHOW_ACTIONBAR_" .. barIndex)
+        if ok and value ~= nil then
+            if value == true or value == 1 or value == "1" then
+                return true
+            end
+            if value == false or value == 0 or value == "0" then
+                return false
+            end
+        end
+    end
+    if barIndex > 1 then
+        local cvar = GetCVar("SHOW_MULTI_ACTIONBAR_" .. (barIndex - 1))
+        if cvar ~= nil then
+            return cvar == "1"
+        end
+    end
+    local frameNames = {
+        [1] = "MainActionBar",
+        [2] = "MultiBarBottomLeft",
+        [3] = "MultiBarBottomRight",
+        [4] = "MultiBarRight",
+        [5] = "MultiBarLeft",
+        [6] = "MultiBar5",
+        [7] = "MultiBar6",
+        [8] = "MultiBar7",
+    }
+    local frame = _G[frameNames[barIndex]]
+    if barIndex == 1 and not frame then
+        frame = _G.MainMenuBar
+    end
+    if frame and frame.IsShown then
+        return frame:IsShown()
+    end
+    return barIndex == 1
+end
+
+local function layoutViewerActionBars(frame)
+    if not frame or not frame.barCells or not frame.barsContainer then
+        return
+    end
+    local visible = {}
+    for barIdx = 1, VIEWER_BAR_COUNT do
+        if isViewerActionBarEnabled(barIdx) then
+            visible[#visible + 1] = barIdx
+        end
+    end
+    local rowHeight = 60
+    local barsPad = WK_VIEWER_LAYOUT.panelInnerPad
+    local slotSize, slotGap = 38, 5
+    local shown = {}
+    for displayIndex, barIdx in ipairs(visible) do
+        shown[barIdx] = true
+        local label = frame.barLabels and frame.barLabels[barIdx]
+        if label then
+            label:ClearAllPoints()
+            label:SetPoint("TOPLEFT", frame.barsContainer, "TOPLEFT", barsPad, -12 - (displayIndex - 1) * rowHeight)
+            label:Show()
+        end
+        local cells = frame.barCells[barIdx]
+        if cells then
+            for slotIdx = 1, 12 do
+                local cell = cells[slotIdx]
+                if cell then
+                    cell:ClearAllPoints()
+                    cell:SetPoint("TOPLEFT", 80 + (slotIdx - 1) * (slotSize + slotGap), -(barsPad - 2) - (displayIndex - 1) * rowHeight)
+                    cell:Show()
+                end
+            end
+        end
+    end
+    for barIdx = 1, VIEWER_BAR_COUNT do
+        if not shown[barIdx] then
+            if frame.barLabels and frame.barLabels[barIdx] then
+                frame.barLabels[barIdx]:Hide()
+            end
+            local cells = frame.barCells[barIdx]
+            if cells then
+                for slotIdx = 1, 12 do
+                    if cells[slotIdx] then
+                        cells[slotIdx]:Hide()
+                    end
+                end
+            end
+        end
+    end
+    local barHeight = math.max(rowHeight, 16 + (#visible * rowHeight))
+    frame.barsContainer:SetHeight(barHeight)
+    frame:SetHeight(678 + barHeight)
+end
+
 local function refreshLayerChips(frame)
     if not frame or not frame.layerButtons then return end
     local active = tostring(frame.modifierLayer or "")
@@ -5194,7 +5304,7 @@ local function refreshViewerFrame(frame)
             tostring(labels.hero.names[1] or labels.hero.ids[1] or "-")
         ))
         if frame.subtitle then
-            frame.subtitle:SetText("Drag a spell between the bars and the keys. Right-click a key to clear it.")
+            frame.subtitle:SetText("Drag a spell between the bars and the keys. Right-click a key to confirm clearing it.")
         end
     else
         if not frame.profileName then return end
@@ -5211,7 +5321,7 @@ local function refreshViewerFrame(frame)
             )
         ))
         if frame.subtitle then
-            frame.subtitle:SetText("Drag a spell between the bars and the keys. Right-click a key to clear it.")
+            frame.subtitle:SetText("Drag a spell between the bars and the keys. Right-click a key to confirm clearing it.")
         end
     end
 
@@ -5230,7 +5340,7 @@ local function refreshViewerFrame(frame)
         overlayLiveViewerBarData(profile, slotData)
     end
     keyToEntries = {}
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local entry = slotData[slot]
         local keyCandidates = {}
         local keySeen = {}
@@ -5373,14 +5483,17 @@ local function refreshViewerFrame(frame)
     end
     refreshLayerChips(frame)
 
-    for barIdx = 1, 5 do
-        for slotIdx = 1, 12 do
-            local globalSlot = ((barIdx - 1) * 12) + slotIdx
-            local data = slotData[globalSlot] or { key = "-", spellName = "-", icon = nil }
-            local cell = frame.barCells[barIdx][slotIdx]
-            setBarViewerCell(cell, data.key, data.spellName, data.icon)
+    for barIdx = 1, VIEWER_BAR_COUNT do
+        if frame.barCells[barIdx] then
+            for slotIdx = 1, 12 do
+                local globalSlot = ((barIdx - 1) * 12) + slotIdx
+                local data = slotData[globalSlot] or { key = "-", spellName = "-", icon = nil }
+                local cell = frame.barCells[barIdx][slotIdx]
+                setBarViewerCell(cell, data.key, data.spellName, data.icon)
+            end
         end
     end
+    layoutViewerActionBars(frame)
 
     if frame.macroCells and frame.macroScrollContent then
         local entries = type(macroEntries) == "table" and macroEntries or {}
@@ -5469,13 +5582,21 @@ local function firstFreeBarSlot()
         local bound = command and firstBindingForCommand(command)
         return not actionType and (not bound or bound == "")
     end
-    for slot = 49, 60 do
-        if slotIsOpen(slot) then
-            return slot
+    local function searchBar(barIdx)
+        if not isViewerActionBarEnabled(barIdx) then
+            return nil
         end
+        for slotIdx = 1, 12 do
+            local slot = ((barIdx - 1) * 12) + slotIdx
+            if slotIsOpen(slot) then
+                return slot
+            end
+        end
+        return nil
     end
-    for slot = 1, 48 do
-        if slotIsOpen(slot) then
+    for _, barIdx in ipairs({ 5, 6, 7, 8, 2, 3, 4, 1 }) do
+        local slot = searchBar(barIdx)
+        if slot then
             return slot
         end
     end
@@ -5571,6 +5692,36 @@ local function clearViewerBinding(bindingKey)
     SetBinding(bindingKey)
     saveViewerBindings()
     refreshOpenViewer()
+end
+
+local function promptClearViewerBinding(bindingKey)
+    if viewerEditBlocked() then
+        return
+    end
+    if not bindingKey or bindingKey == "" then
+        return
+    end
+    local currentAction = type(GetBindingAction) == "function" and GetBindingAction(bindingKey) or nil
+    if not currentAction or currentAction == "" then
+        return
+    end
+    if not StaticPopupDialogs["WOWKEYB_CLEAR_KEY_CONFIRM"] then
+        StaticPopupDialogs["WOWKEYB_CLEAR_KEY_CONFIRM"] = {
+            text = "Clear the binding for %s?",
+            button1 = "Clear",
+            button2 = "Cancel",
+            OnAccept = function(_, data)
+                if type(data) == "string" and data ~= "" then
+                    clearViewerBinding(data)
+                end
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+    StaticPopup_Show("WOWKEYB_CLEAR_KEY_CONFIRM", formatHotkeyLabel(bindingKey), nil, bindingKey)
 end
 
 function WoWKeyb:ShowKeybindingViewer(profileName)
@@ -5748,7 +5899,7 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                         viewerDrag = nil
                         return
                     end
-                    clearViewerBinding(self.dragBindingKey)
+                    promptClearViewerBinding(self.dragBindingKey)
                 end)
 
                 viewerFrame.keyboardCells[key] = cell
@@ -5757,21 +5908,24 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local barsTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         barsTitle:SetPoint("TOPLEFT", keyboardContainer, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapSection)
-        barsTitle:SetText("Blizzard Action Bars (1-5)")
+        barsTitle:SetText("Action Bars")
 
         local barsContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
         barsContainer:SetPoint("TOPLEFT", barsTitle, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapTitleToPanel)
         -- Keep a large footer gap so the bottom action bar never overlaps controls.
         barsContainer:SetSize(WK_VIEWER_LAYOUT.contentWidth, 322)
         wkApplyViewerPanelBackdrop(barsContainer)
+        viewerFrame.barsContainer = barsContainer
 
         viewerFrame.barCells = {}
+        viewerFrame.barLabels = {}
         local slotSize, slotGap, rowHeight = 38, 5, 60
         local barsPad = WK_VIEWER_LAYOUT.panelInnerPad
-        for barIdx = 1, 5 do
+        for barIdx = 1, VIEWER_BAR_COUNT do
             local barLabel = barsContainer:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             barLabel:SetPoint("TOPLEFT", barsContainer, "TOPLEFT", barsPad, -12 - (barIdx - 1) * rowHeight)
             barLabel:SetText("Bar " .. tostring(barIdx))
+            viewerFrame.barLabels[barIdx] = barLabel
 
             viewerFrame.barCells[barIdx] = {}
             for slotIdx = 1, 12 do
