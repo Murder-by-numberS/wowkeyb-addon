@@ -6376,7 +6376,7 @@ function WoWKeyb:ShowExportDialog(profileName)
 
         local subtitle = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOP", title, "BOTTOM", 0, -6)
-        subtitle:SetText("Copy this share code and import it in WoWKeyb.")
+        subtitle:SetText("Press Ctrl+C to copy the share code. This window closes after you copy.")
         exportFrame.subtitle = subtitle
 
         local summary = exportFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -6399,41 +6399,47 @@ function WoWKeyb:ShowExportDialog(profileName)
         edit:SetTextInsets(6, 6, 6, 6)
         edit:SetScript("OnEscapePressed", function() exportFrame:Hide() end)
         edit:SetScript("OnEnterPressed", function(self)
-            self:Insert("\n")
+            self:HighlightText()
+        end)
+        local copyModifierDown = false
+        local function isCopyModifier(key)
+            return key == "LCTRL" or key == "RCTRL" or key == "LMETA" or key == "RMETA"
+        end
+        edit:SetScript("OnKeyDown", function(_, key)
+            if isCopyModifier(key) then
+                copyModifierDown = true
+            end
+        end)
+        edit:SetScript("OnKeyUp", function(_, key)
+            if isCopyModifier(key) then
+                if C_Timer and type(C_Timer.After) == "function" then
+                    C_Timer.After(0.2, function()
+                        copyModifierDown = false
+                    end)
+                else
+                    copyModifierDown = false
+                end
+                return
+            end
+            if copyModifierDown and (key == "C" or key == "X") then
+                local function closeExport()
+                    if exportFrame then
+                        exportFrame:Hide()
+                    end
+                end
+                if C_Timer and type(C_Timer.After) == "function" then
+                    C_Timer.After(0.1, closeExport)
+                else
+                    closeExport()
+                end
+            end
         end)
         scroll:SetScrollChild(edit)
         exportFrame.editBox = edit
 
-        local copyBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
-        copyBtn:SetSize(150, 22)
-        copyBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", 90, 20)
-        copyBtn:SetText("Copy All")
-        copyBtn:SetScript("OnClick", function()
-            local text = exportFrame and exportFrame.editBox and exportFrame.editBox:GetText() or ""
-            local copied = false
-            if text ~= "" and C_Clipboard then
-                if type(C_Clipboard.SetClipboard) == "function" then
-                    local okSet = pcall(C_Clipboard.SetClipboard, text)
-                    copied = okSet == true
-                elseif type(C_Clipboard.CopyToClipboard) == "function" then
-                    local okCopy = pcall(C_Clipboard.CopyToClipboard, text)
-                    copied = okCopy == true
-                end
-            end
-            if copied then
-                print("|cff00ff00[WoWKeyb]|r Export share code copied to clipboard.")
-                return
-            end
-            if exportFrame.editBox then
-                exportFrame.editBox:SetFocus()
-                exportFrame.editBox:HighlightText()
-            end
-            print("|cffffcc00[WoWKeyb]|r Clipboard API unavailable. Press Ctrl/Cmd+C to copy the highlighted share code.")
-        end)
-
         local closeBtn = CreateFrame("Button", nil, exportFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
-        closeBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", -90, 20)
+        closeBtn:SetPoint("BOTTOM", exportFrame, "BOTTOM", 0, 20)
         closeBtn:SetText("Close")
         closeBtn:SetScript("OnClick", function() exportFrame:Hide() end)
     end

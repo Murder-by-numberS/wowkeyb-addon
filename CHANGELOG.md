@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.95
+
+- Export no longer has Copy All. Press Ctrl+C and the share-code window closes.
+
 ## 1.2.94
 
 - Switch between the keybind map and Profiles from the Map / Profiles control in the addon window.
