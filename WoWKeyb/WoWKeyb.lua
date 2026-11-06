@@ -4955,6 +4955,7 @@ local function showBarCellTooltip(cell)
         GameTooltip:AddLine(spellLabel, 0.95, 0.95, 0.95)
     end
     GameTooltip:AddLine("Bind: " .. keyLabel, 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Drag onto a key to move this ability.", 0.8, 0.8, 0.8)
     GameTooltip:Show()
 end
 
@@ -5000,6 +5001,7 @@ local function showKeyboardCellTooltip(cell)
             )
         end
     end
+    GameTooltip:AddLine("Drag to move. Right-click to clear this key.", 0.8, 0.8, 0.8)
     if #extras > 0 then
         GameTooltip:AddLine("Other modifier layers", 0.95, 0.78, 0.35)
         for _, entry in ipairs(extras) do
@@ -5192,7 +5194,7 @@ local function refreshViewerFrame(frame)
             tostring(labels.hero.names[1] or labels.hero.ids[1] or "-")
         ))
         if frame.subtitle then
-            frame.subtitle:SetText("Icons are what is bound right now. Pick Shift, Ctrl, or Alt to see that layer.")
+            frame.subtitle:SetText("Drag a spell between the bars and the keys. Right-click a key to clear it.")
         end
     else
         if not frame.profileName then return end
@@ -5209,7 +5211,7 @@ local function refreshViewerFrame(frame)
             )
         ))
         if frame.subtitle then
-            frame.subtitle:SetText("Profile map. A gold mark means another modifier layer also uses that key.")
+            frame.subtitle:SetText("Drag a spell between the bars and the keys. Right-click a key to clear it.")
         end
     end
 
@@ -5358,6 +5360,16 @@ local function refreshViewerFrame(frame)
             end
         end
         setKeyboardViewerCell(cell, key, layerEntries, extraEntries)
+        local bindingKey = key
+        if activeLayer == "SHIFT" then
+            bindingKey = "SHIFT-" .. key
+        elseif activeLayer == "CTRL" then
+            bindingKey = "CTRL-" .. key
+        elseif activeLayer == "ALT" then
+            bindingKey = "ALT-" .. key
+        end
+        cell.dragBindingKey = bindingKey
+        cell.dragSlot = layerEntries[1] and layerEntries[1].slot or nil
     end
     refreshLayerChips(frame)
 
@@ -5421,7 +5433,146 @@ local function refreshViewerFrame(frame)
     end
 end
 
+local COMMAND_TO_SLOT = {}
+for slot, command in pairs(SLOT_COMMANDS) do
+    COMMAND_TO_SLOT[command] = slot
+end
+
 local viewerFrame
+local viewerDrag
+
+local function viewerEditBlocked()
+    if InCombatLockdown() then
+        print("|cffffcc00[WoWKeyb]|r Leave combat before moving abilities.")
+        return true
+    end
+    if viewerFrame and not viewerFrame.liveOnly and not canSaveViewerBarsToProfile(viewerFrame.profileName) then
+        print("|cffffcc00[WoWKeyb]|r Apply this profile before moving abilities on its map.")
+        return true
+    end
+    return false
+end
+
+local function saveViewerBindings()
+    if type(GetCurrentBindingSet) == "function" and type(SaveBindings) == "function" then
+        local bindingSet = GetCurrentBindingSet()
+        if bindingSet then
+            SaveBindings(bindingSet)
+        end
+    end
+end
+
+local function firstFreeBarSlot()
+    local function slotIsOpen(slot)
+        local actionType = GetActionInfo(toBlizzardActionSlot(slot))
+        local command = SLOT_COMMANDS[slot]
+        local bound = command and firstBindingForCommand(command)
+        return not actionType and (not bound or bound == "")
+    end
+    for slot = 49, 60 do
+        if slotIsOpen(slot) then
+            return slot
+        end
+    end
+    for slot = 1, 48 do
+        if slotIsOpen(slot) then
+            return slot
+        end
+    end
+    return nil
+end
+
+local function refreshOpenViewer()
+    if viewerFrame and not viewerFrame.liveOnly and viewerFrame.profileName then
+        if canSaveViewerBarsToProfile(viewerFrame.profileName) then
+            syncProfileSnapshotFromGame(viewerFrame.profileName, { force = true })
+        end
+    end
+    if viewerFrame then
+        refreshViewerFrame(viewerFrame)
+    end
+end
+
+local function beginSlotDrag(logicalSlot, bindingKey)
+    if viewerEditBlocked() then
+        return
+    end
+    if not logicalSlot then
+        return
+    end
+    local actionSlot = toBlizzardActionSlot(logicalSlot)
+    if not GetActionInfo(actionSlot) then
+        return
+    end
+    PickupAction(actionSlot)
+    viewerDrag = { slot = logicalSlot, bindingKey = bindingKey }
+end
+
+local function dropOnViewerTarget(destSlot, destBindingKey, fromKey)
+    if viewerEditBlocked() then
+        if GetCursorInfo() then
+            ClearCursor()
+        end
+        viewerDrag = nil
+        return
+    end
+    if not GetCursorInfo() then
+        viewerDrag = nil
+        return
+    end
+
+    local sourceSlot = viewerDrag and viewerDrag.slot
+    local sourceKey = viewerDrag and viewerDrag.bindingKey
+    local movingKeyOntoSameSpell = fromKey and sourceSlot and not destSlot
+
+    if movingKeyOntoSameSpell then
+        destSlot = sourceSlot
+    end
+    if not destSlot then
+        destSlot = firstFreeBarSlot()
+    end
+    if not destSlot then
+        if GetCursorInfo() then
+            ClearCursor()
+        end
+        viewerDrag = nil
+        print("|cffffcc00[WoWKeyb]|r No open bar slot for that key.")
+        return
+    end
+
+    local destAction = toBlizzardActionSlot(destSlot)
+    if sourceSlot and sourceSlot == destSlot then
+        PlaceAction(destAction)
+    else
+        PlaceAction(destAction)
+        if GetCursorInfo() and sourceSlot and sourceSlot ~= destSlot then
+            PlaceAction(toBlizzardActionSlot(sourceSlot))
+        end
+    end
+
+    if destBindingKey and SLOT_COMMANDS[destSlot] then
+        SetBinding(destBindingKey, SLOT_COMMANDS[destSlot])
+    end
+    if movingKeyOntoSameSpell and sourceKey and destBindingKey and sourceKey ~= destBindingKey then
+        SetBinding(sourceKey)
+    end
+    saveViewerBindings()
+    viewerDrag = nil
+    refreshOpenViewer()
+end
+
+local function clearViewerBinding(bindingKey)
+    if viewerEditBlocked() then
+        return
+    end
+    if not bindingKey or bindingKey == "" then
+        return
+    end
+    SetBinding(bindingKey)
+    saveViewerBindings()
+    refreshOpenViewer()
+end
+
 function WoWKeyb:ShowKeybindingViewer(profileName)
     local liveOnly = profileName == nil or profileName == "" or profileName == BLIZZARD_DEFAULT_PROFILE
     local target = profileName
@@ -5571,6 +5722,34 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                     wkSetViewerCellHover(self, false)
                     GameTooltip:Hide()
                 end)
+                cell:EnableMouse(true)
+                cell:RegisterForDrag("LeftButton")
+                cell:SetScript("OnDragStart", function(self)
+                    beginSlotDrag(self.dragSlot, self.dragBindingKey)
+                end)
+                cell:SetScript("OnReceiveDrag", function(self)
+                    dropOnViewerTarget(self.dragSlot, self.dragBindingKey, true)
+                end)
+                cell:SetScript("OnMouseUp", function(self, button)
+                    if button ~= "LeftButton" or not GetCursorInfo() then
+                        return
+                    end
+                    if viewerDrag and viewerDrag.slot == self.dragSlot and viewerDrag.bindingKey == self.dragBindingKey then
+                        return
+                    end
+                    dropOnViewerTarget(self.dragSlot, self.dragBindingKey, true)
+                end)
+                cell:SetScript("OnMouseDown", function(self, button)
+                    if button ~= "RightButton" then
+                        return
+                    end
+                    if GetCursorInfo() then
+                        ClearCursor()
+                        viewerDrag = nil
+                        return
+                    end
+                    clearViewerBinding(self.dragBindingKey)
+                end)
 
                 viewerFrame.keyboardCells[key] = cell
             end
@@ -5632,6 +5811,23 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 cell:SetScript("OnLeave", function(self)
                     wkSetViewerCellHover(self, false)
                     GameTooltip:Hide()
+                end)
+                cell:EnableMouse(true)
+                cell:RegisterForDrag("LeftButton")
+                cell:SetScript("OnDragStart", function(self)
+                    beginSlotDrag(self.viewerSlot, nil)
+                end)
+                cell:SetScript("OnReceiveDrag", function(self)
+                    dropOnViewerTarget(self.viewerSlot, nil, false)
+                end)
+                cell:SetScript("OnMouseUp", function(self, button)
+                    if button ~= "LeftButton" or not GetCursorInfo() then
+                        return
+                    end
+                    if viewerDrag and viewerDrag.slot == self.viewerSlot and viewerDrag.bindingKey == nil then
+                        return
+                    end
+                    dropOnViewerTarget(self.viewerSlot, nil, false)
                 end)
 
                 viewerFrame.barCells[barIdx][slotIdx] = cell
@@ -6031,16 +6227,28 @@ local function createSettingsPanel()
     end
 
     local function refreshApplyButtonState()
-        if not applyBtn then return end
-        local canApply = selectedProfileCanApply()
-        if applyBtn.Enable then
-            if canApply then
-                applyBtn:Enable()
+        if applyBtn then
+            local canApply = selectedProfileCanApply()
+            if applyBtn.Enable then
+                if canApply then
+                    applyBtn:Enable()
+                else
+                    applyBtn:Disable()
+                end
+            end
+            applyBtn:SetText("Apply Profile")
+        end
+        if selectedViewerBtn then
+            local target = selectedProfileName or WoWKeybDB.currentProfile
+            local canView = target
+                and target ~= BLIZZARD_DEFAULT_PROFILE
+                and WoWKeybDB.profiles[target] ~= nil
+            if canView then
+                selectedViewerBtn:Enable()
             else
-                applyBtn:Disable()
+                selectedViewerBtn:Disable()
             end
         end
-        applyBtn:SetText("Apply Profile")
     end
 
     local function deepCopy(value)
@@ -6550,14 +6758,25 @@ local function createSettingsPanel()
     selectedViewerBtn:SetSize(180, 24)
     selectedViewerBtn:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 16, -8)
     selectedViewerBtn:SetText("View Keybinding Map")
+    selectedViewerBtn:SetMotionScriptsWhileDisabled(true)
+    selectedViewerBtn:SetScript("OnEnter", function(self)
+        local target = selectedProfileName or WoWKeybDB.currentProfile
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:ClearLines()
+        if not target or target == BLIZZARD_DEFAULT_PROFILE or not WoWKeybDB.profiles[target] then
+            GameTooltip:AddLine("No saved map for Blizzard Default", 1, 1, 1)
+            GameTooltip:AddLine("Left-click the minimap icon to see your current binds.", 0.8, 0.8, 0.8)
+        else
+            GameTooltip:AddLine("Open the saved map for this profile.", 1, 1, 1)
+        end
+        GameTooltip:Show()
+    end)
+    selectedViewerBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
     selectedViewerBtn:SetScript("OnClick", function()
         local target = selectedProfileName or WoWKeybDB.currentProfile
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No selected profile to view.")
-            return
-        end
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Blizzard Default has no profile mapping to view.")
+        if not target or target == BLIZZARD_DEFAULT_PROFILE or not WoWKeybDB.profiles[target] then
             return
         end
         WoWKeyb:ShowKeybindingViewer(target)
