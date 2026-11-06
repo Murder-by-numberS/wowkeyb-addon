@@ -1203,6 +1203,73 @@ local function readSpellFromActionSlot(slot)
     }
 end
 
+local function readUtilityActionFromActionSlot(slot, actionTypeOverride, actionIdOverride)
+    if not slot or slot < 1 or slot > 120 then
+        return nil
+    end
+
+    local actionType, actionId = actionTypeOverride, actionIdOverride
+    if not actionType then
+        actionType, actionId = GetActionInfo(slot)
+    end
+    if not actionType then
+        return nil
+    end
+
+    local normalizedType = tostring(actionType):lower()
+    local texture = GetActionTexture and GetActionTexture(slot) or nil
+
+    if normalizedType == "item" and actionId then
+        local itemId = tonumber(actionId)
+        local itemName = ""
+        local itemIcon = texture
+        if itemId then
+            if type(GetItemInfo) == "function" then
+                local n, _, _, _, _, _, _, _, _, i = GetItemInfo(itemId)
+                if n then itemName = tostring(n) end
+                if not itemIcon and i then itemIcon = i end
+            end
+            if itemName == "" and C_Item and type(C_Item.GetItemNameByID) == "function" then
+                local okName, resolvedName = pcall(C_Item.GetItemNameByID, itemId)
+                if okName and resolvedName then
+                    itemName = tostring(resolvedName)
+                end
+            end
+            if not itemIcon and type(GetItemIcon) == "function" then
+                itemIcon = GetItemIcon(itemId)
+            end
+        end
+
+        local isToy = itemId and type(PlayerHasToy) == "function" and PlayerHasToy(itemId) == true
+        if isToy then
+            return {
+                spellId = "toy:" .. tostring(itemId or ""),
+                name = "Toy",
+                icon = itemIcon or "",
+                actionType = "toy",
+            }
+        end
+
+        return {
+            spellId = "item:" .. tostring(itemId or actionId or ""),
+            name = itemName ~= "" and itemName or "Item",
+            icon = itemIcon or "",
+            actionType = "item",
+        }
+    end
+
+    if normalizedType == "mount" or normalizedType == "summonmount" or normalizedType == "companion" then
+        return {
+            spellId = "mount:" .. tostring(actionId or ""),
+            name = "Mount",
+            icon = texture or "",
+            actionType = "mount",
+        }
+    end
+
+    return nil
+end
+
 local function readMacroFromActionSlot(slot)
     if not slot or slot < 1 or slot > 120 then
         return nil
@@ -1979,12 +2046,24 @@ local function syncProfileSpellsFromActionBars(profileName)
             end
         else
             local barSpell = readSpellFromActionSlot(actionSlot)
+            local utilityAction = nil
+            if not barSpell then
+                utilityAction = readUtilityActionFromActionSlot(actionSlot, actionType, actionId)
+            end
             if barSpell then
                 nextSpell = {
                     spellId = barSpell.spellId,
                     name = barSpell.name,
                     icon = barSpell.icon,
                     actionType = "spell",
+                    isMacro = false,
+                }
+            elseif utilityAction then
+                nextSpell = {
+                    spellId = utilityAction.spellId,
+                    name = utilityAction.name,
+                    icon = utilityAction.icon,
+                    actionType = utilityAction.actionType,
                     isMacro = false,
                 }
             end
@@ -2875,6 +2954,7 @@ applyProfile = function(profile)
                 end
             end
             local spellName = spell.name or spell.spellName or spell.spell_name or spell.ability_name or spell.abilityName
+            local entryActionType = tostring(spell.actionType or spell.action_type or ""):lower()
             local macroPayload = extractMacroPayload(spell, macroLookup)
             if debugApplyAssignments and not macroPayload then
                 local rawActionType = tostring(spell and (spell.actionType or spell.action_type) or "")
@@ -2897,7 +2977,17 @@ applyProfile = function(profile)
                 if nameFromId then spellName = nameFromId end
             end
 
-            if (not macroPayload) and ((not spellId and not spellName) or spellName == "") then
+            if (not macroPayload) and entryActionType ~= "" and entryActionType ~= "spell" then
+                skipped = skipped + 1
+                if debugApplySlots then
+                    addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
+                        .. " blizzSlot=" .. tostring(toBlizzardActionSlot(slot))
+                        .. " key=" .. tostring(wowKey or "")
+                        .. " spellId=" .. tostring(spellId or "")
+                        .. " spell=\"" .. tostring(spellName or "") .. "\" result=skip reason=unsupported-action-type("
+                        .. tostring(entryActionType) .. ")")
+                end
+            elseif (not macroPayload) and ((not spellId and not spellName) or spellName == "") then
                 skipped = skipped + 1
                 if debugApplySlots then
                     addonChat("|cffffcc00[WoWKeyb]|r [slot-debug] slot=" .. tostring(slot)
@@ -4463,6 +4553,13 @@ local function readLiveViewerBarSlot(slot)
             }
         end
     else
+        local utilityAction = readUtilityActionFromActionSlot(actionSlot, actionType, actionId)
+        if utilityAction then
+            return {
+                spellName = tostring(utilityAction.name or "(no spell)"),
+                icon = utilityAction.icon,
+            }
+        end
         local texture = GetActionTexture and GetActionTexture(actionSlot) or nil
         local actionText = GetActionText and GetActionText(actionSlot) or nil
         local fallbackName = tostring(actionText or actionType or "(no spell)")
@@ -4475,6 +4572,24 @@ local function readLiveViewerBarSlot(slot)
     end
 
     return nil
+end
+
+local function buildLiveViewerSlotData()
+    local slotData = {}
+    for slot = 1, 60 do
+        local live = readLiveViewerBarSlot(slot)
+        local keyValue = ""
+        local command = SLOT_COMMANDS[slot]
+        if command then
+            keyValue = tostring(wowBindingToProfileKey(firstBindingForCommand(command)) or "")
+        end
+        slotData[slot] = {
+            key = keyValue,
+            spellName = live and tostring(live.spellName or "-") or "-",
+            icon = live and live.icon or nil,
+        }
+    end
+    return slotData
 end
 
 local function overlayLiveViewerBarData(profile, slotData)
@@ -4843,18 +4958,34 @@ local function showBarCellTooltip(cell)
     GameTooltip:Show()
 end
 
+local function bindingMatchesLayer(rawKey, layer)
+    local normalized = normalizeKey(rawKey) or ""
+    local hasShift = normalized:find("SHIFT-", 1, true) ~= nil
+    local hasCtrl = normalized:find("CTRL-", 1, true) ~= nil
+    local hasAlt = normalized:find("ALT-", 1, true) ~= nil
+    layer = tostring(layer or "")
+    if layer == "SHIFT" then
+        return hasShift and not hasCtrl and not hasAlt
+    elseif layer == "CTRL" then
+        return hasCtrl and not hasShift and not hasAlt
+    elseif layer == "ALT" then
+        return hasAlt and not hasShift and not hasCtrl
+    end
+    return not hasShift and not hasCtrl and not hasAlt
+end
+
 local function showKeyboardCellTooltip(cell)
     local key = cell and cell.viewerKey
     if not key then return end
     local entries = (cell and cell.viewerEntries) or {}
+    local extras = (cell and cell.viewerExtra) or {}
 
     GameTooltip:SetOwner(cell, "ANCHOR_RIGHT")
     GameTooltip:ClearLines()
     GameTooltip:AddLine("Key: " .. tostring(key), 1, 1, 1)
     if #entries == 0 then
-        GameTooltip:AddLine("No abilities assigned", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Nothing bound on this layer", 0.8, 0.8, 0.8)
     else
-        GameTooltip:AddLine(string.format("%d ability binding(s)", #entries), 0.8, 0.8, 0.8)
         for _, entry in ipairs(entries) do
             local iconPrefix = ""
             if entry.icon and entry.icon ~= "" then
@@ -4869,10 +5000,39 @@ local function showKeyboardCellTooltip(cell)
             )
         end
     end
+    if #extras > 0 then
+        GameTooltip:AddLine("Other modifier layers", 0.95, 0.78, 0.35)
+        for _, entry in ipairs(extras) do
+            local name = entry.spellName or "(no spell)"
+            local keyLabel = tostring(entry.key or "-")
+            GameTooltip:AddLine(keyLabel .. " - " .. name, 0.8, 0.8, 0.8)
+        end
+    end
     GameTooltip:Show()
 end
 
-local function setKeyboardViewerCell(cell, key, entries)
+local function resolveViewerIconRef(icon)
+    if not icon or tostring(icon) == "" or tostring(icon) == "0" then
+        return nil
+    end
+    if tostring(icon):lower():find("^https?://") then
+        return nil
+    end
+    local iconText = tostring(icon):gsub("^%s+", ""):gsub("%s+$", "")
+    local numeric = tonumber(iconText)
+    if numeric and numeric > 0 then
+        return numeric
+    end
+    if iconText:find("\\", 1, true) then
+        return iconText
+    end
+    if iconText ~= "" then
+        return "Interface\\Icons\\" .. iconText
+    end
+    return nil
+end
+
+local function setKeyboardViewerCell(cell, key, entries, extras)
     if not cell then return end
     local cleanKey = (key and key ~= "") and key or "-"
     local list = entries or {}
@@ -4885,32 +5045,42 @@ local function setKeyboardViewerCell(cell, key, entries)
             break
         end
     end
+    local extraList = extras or {}
     cell.viewerKey = cleanKey
     cell.viewerEntries = list
+    cell.viewerExtra = extraList
     cell.keyText:SetText(cleanKey)
 
-    local iconRef = nil
-    if first and first.icon and tostring(first.icon) ~= "" and tostring(first.icon) ~= "0"
-        and not tostring(first.icon):lower():find("^https?://") then
-        local iconText = tostring(first.icon):gsub("^%s+", ""):gsub("%s+$", "")
-        local numeric = tonumber(iconText)
-        if numeric and numeric > 0 then
-            iconRef = numeric
-        elseif iconText:find("\\", 1, true) then
-            iconRef = iconText
-        elseif iconText ~= "" then
-            iconRef = "Interface\\Icons\\" .. iconText
-        end
-    end
+    local iconRef = resolveViewerIconRef(first and first.icon)
     if (not iconRef) and #list > 0 then
         iconRef = "Interface\\Icons\\INV_Misc_QuestionMark"
     end
     if iconRef then
         cell.icon:SetTexture(iconRef)
         cell.icon:Show()
+        if cell.keyPlate then
+            cell.keyPlate:Show()
+        end
+        cell.keyText:ClearAllPoints()
+        cell.keyText:SetPoint("BOTTOM", 0, 1)
+        cell.keyText:SetJustifyH("CENTER")
     else
         cell.icon:SetTexture(nil)
         cell.icon:Hide()
+        if cell.keyPlate then
+            cell.keyPlate:Hide()
+        end
+        cell.keyText:ClearAllPoints()
+        cell.keyText:SetPoint("CENTER")
+        cell.keyText:SetJustifyH("CENTER")
+    end
+
+    if cell.layerMark then
+        if #extraList > 0 then
+            cell.layerMark:Show()
+        else
+            cell.layerMark:Hide()
+        end
     end
 
     if #list > 1 then
@@ -4922,25 +5092,139 @@ local function setKeyboardViewerCell(cell, key, entries)
     end
 end
 
+-- Viewer UI: one palette + helpers so nested panels/cells match; hover uses the same ramps.
+local WK_VIEWER_THEME = {
+    panelBg = { 0.07, 0.07, 0.09, 0.92 },
+    panelBorder = { 0.24, 0.24, 0.30, 0.95 },
+    cellBg = { 0.14, 0.14, 0.17, 0.98 },
+    cellBorder = { 0.40, 0.40, 0.46, 0.95 },
+    cellBgHi = { 0.22, 0.22, 0.26, 0.99 },
+    cellBorderHi = { 0.58, 0.60, 0.72, 1 },
+}
+
+-- Keybinding viewer: margins + vertical rhythm (content inset vs footer buttons).
+local WK_VIEWER_LAYOUT = {
+    padX = 20,
+    padTop = 20,
+    padBottom = 48,
+    contentWidth = 980,
+    gapAfterTitle = 6,
+    gapAfterSubtitle = 8,
+    gapSection = 16,
+    gapTitleToPanel = 8,
+    panelInnerPad = 10,
+    macroScrollInset = 10,
+    macroScrollRightInset = 28,
+    btnBottomPad = 14,
+    btnBetween = 16,
+}
+
+local function wkApplyViewerPanelBackdrop(f)
+    if not f or not f.SetBackdrop then return end
+    f:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false, edgeSize = 10,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    f:SetBackdropColor(unpack(WK_VIEWER_THEME.panelBg))
+    f:SetBackdropBorderColor(unpack(WK_VIEWER_THEME.panelBorder))
+end
+
+local function wkApplyViewerCellBackdrop(f)
+    if not f or not f.SetBackdrop then return end
+    f:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false, edgeSize = 8,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    f:SetBackdropColor(unpack(WK_VIEWER_THEME.cellBg))
+    f:SetBackdropBorderColor(unpack(WK_VIEWER_THEME.cellBorder))
+end
+
+local function wkSetViewerCellHover(f, hover)
+    if not f or not f.SetBackdropColor then return end
+    if hover then
+        f:SetBackdropColor(unpack(WK_VIEWER_THEME.cellBgHi))
+        if f.SetBackdropBorderColor then
+            f:SetBackdropBorderColor(unpack(WK_VIEWER_THEME.cellBorderHi))
+        end
+    else
+        f:SetBackdropColor(unpack(WK_VIEWER_THEME.cellBg))
+        if f.SetBackdropBorderColor then
+            f:SetBackdropBorderColor(unpack(WK_VIEWER_THEME.cellBorder))
+        end
+    end
+end
+
+local function refreshLayerChips(frame)
+    if not frame or not frame.layerButtons then return end
+    local active = tostring(frame.modifierLayer or "")
+    for _, chip in ipairs(frame.layerButtons) do
+        local selected = chip.layerId == active
+        if selected then
+            chip:SetBackdropColor(0.30, 0.36, 0.48, 1)
+            chip:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+            if chip.label then
+                chip.label:SetTextColor(1, 1, 1)
+            end
+        else
+            chip:SetBackdropColor(0.12, 0.12, 0.15, 1)
+            chip:SetBackdropBorderColor(0.34, 0.34, 0.40, 1)
+            if chip.label then
+                chip.label:SetTextColor(0.78, 0.78, 0.84)
+            end
+        end
+    end
+end
+
 local function refreshViewerFrame(frame)
-    if not frame or not frame.profileName then return end
-    local profile = getStoredProfile(frame.profileName)
-    if not profile then return end
+    if not frame then return end
+    local liveOnly = frame.liveOnly == true
+    local profile = nil
+    if liveOnly then
+        local labels = buildPlayerLabelCollection()
+        frame.metaText:SetText(string.format(
+            "Live binds    %s    %s    %s",
+            tostring(labels.class.variants[1] or "Unknown"),
+            tostring(labels.spec.names[1] or labels.spec.ids[1] or "-"),
+            tostring(labels.hero.names[1] or labels.hero.ids[1] or "-")
+        ))
+        if frame.subtitle then
+            frame.subtitle:SetText("Icons are what is bound right now. Pick Shift, Ctrl, or Alt to see that layer.")
+        end
+    else
+        if not frame.profileName then return end
+        profile = getStoredProfile(frame.profileName)
+        if not profile then return end
+        frame.metaText:SetText(string.format(
+            "Profile: %s    Class: %s    Spec: %s    Hero Talent: %s",
+            tostring(profile.name or frame.profileName or "Unknown"),
+            formatClassLabel(profile.class),
+            tostring(profile.spec or "-"),
+            formatHeroTalentLabel(
+                profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId,
+                profile.heroTalentId or profile.hero_talent_id
+            )
+        ))
+        if frame.subtitle then
+            frame.subtitle:SetText("Profile map. A gold mark means another modifier layer also uses that key.")
+        end
+    end
 
-    frame.metaText:SetText(string.format(
-        "Profile: %s    Class: %s    Spec: %s    Hero Talent: %s",
-        tostring(profile.name or frame.profileName or "Unknown"),
-        formatClassLabel(profile.class),
-        tostring(profile.spec or "-"),
-        formatHeroTalentLabel(
-            profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId,
-            profile.heroTalentId or profile.hero_talent_id
-        )
-    ))
-
-    local keyToEntries, slotData, macroEntries = buildViewerData(profile)
-    local showLiveOverlay = canSaveViewerBarsToProfile(frame.profileName)
-    if showLiveOverlay then
+    local keyToEntries, slotData, macroEntries
+    local showLiveOverlay
+    if liveOnly then
+        keyToEntries = {}
+        slotData = buildLiveViewerSlotData()
+        macroEntries = buildLiveMacroEntriesFromBars(slotData)
+        showLiveOverlay = true
+    else
+        keyToEntries, slotData, macroEntries = buildViewerData(profile)
+        showLiveOverlay = canSaveViewerBarsToProfile(frame.profileName)
+    end
+    if showLiveOverlay and not liveOnly then
         overlayLiveViewerBarData(profile, slotData)
     end
     keyToEntries = {}
@@ -5023,31 +5307,59 @@ local function refreshViewerFrame(frame)
     end
     macroEntries = filterMacroEntriesForDisplay(macroEntries)
 
-    if frame.refreshBtn then
-        local canSave = canSaveViewerBarsToProfile(frame.profileName)
-        if canSave then
-            frame.refreshBtn:Enable()
-            frame.refreshBtn:SetAlpha(1)
-        else
-            frame.refreshBtn:Disable()
-            frame.refreshBtn:SetAlpha(0.5)
+    if liveOnly then
+        if frame.refreshBtn then
+            frame.refreshBtn:Hide()
         end
-        frame.refreshBtn:Show()
-    end
-
-    if frame.applyBtn then
-        local diagnostics = getProfileMatchDiagnostics(profile)
-        if diagnostics and diagnostics.matches then
-            frame.applyBtn:Show()
-        else
+        if frame.applyBtn then
             frame.applyBtn:Hide()
         end
+        if frame.closeBtn then
+            frame.closeBtn:ClearAllPoints()
+            frame.closeBtn:SetPoint("BOTTOM", frame, "BOTTOM", 0, WK_VIEWER_LAYOUT.btnBottomPad)
+        end
+    else
+        if frame.closeBtn and frame.applyBtn then
+            frame.closeBtn:ClearAllPoints()
+            frame.closeBtn:SetPoint("BOTTOMRIGHT", frame.applyBtn, "BOTTOMLEFT", -WK_VIEWER_LAYOUT.btnBetween, 0)
+        end
+        if frame.refreshBtn then
+            local canSave = canSaveViewerBarsToProfile(frame.profileName)
+            if canSave then
+                frame.refreshBtn:Enable()
+                frame.refreshBtn:SetAlpha(1)
+            else
+                frame.refreshBtn:Disable()
+                frame.refreshBtn:SetAlpha(0.5)
+            end
+            frame.refreshBtn:Show()
+        end
+
+        if frame.applyBtn then
+            local diagnostics = getProfileMatchDiagnostics(profile)
+            if diagnostics and diagnostics.matches then
+                frame.applyBtn:Show()
+            else
+                frame.applyBtn:Hide()
+            end
+        end
     end
 
+    local activeLayer = tostring(frame.modifierLayer or "")
     for key, cell in pairs(frame.keyboardCells) do
         local entries = keyToEntries[key] or {}
-        setKeyboardViewerCell(cell, key, entries)
+        local layerEntries = {}
+        local extraEntries = {}
+        for _, entry in ipairs(entries) do
+            if bindingMatchesLayer(entry.key, activeLayer) then
+                layerEntries[#layerEntries + 1] = entry
+            else
+                extraEntries[#extraEntries + 1] = entry
+            end
+        end
+        setKeyboardViewerCell(cell, key, layerEntries, extraEntries)
     end
+    refreshLayerChips(frame)
 
     for barIdx = 1, 5 do
         for slotIdx = 1, 12 do
@@ -5066,16 +5378,7 @@ local function refreshViewerFrame(frame)
             if not cell then
                 cell = CreateFrame("Frame", nil, frame.macroScrollContent, "BackdropTemplate")
                 cell:SetSize(iconSize, iconSize)
-                if cell.SetBackdrop then
-                    cell:SetBackdrop({
-                        bgFile = "Interface\\Buttons\\WHITE8X8",
-                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                        tile = false, edgeSize = 8,
-                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-                    })
-                    cell:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
-                    cell:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
-                end
+                wkApplyViewerCellBackdrop(cell)
                 cell.icon = cell:CreateTexture(nil, "ARTWORK")
                 cell.icon:SetPoint("TOPLEFT", 2, -2)
                 cell.icon:SetPoint("BOTTOMRIGHT", -2, 2)
@@ -5084,21 +5387,11 @@ local function refreshViewerFrame(frame)
                 cell.usageText:SetPoint("BOTTOMRIGHT", -2, 2)
                 cell.usageText:SetText("")
                 cell:SetScript("OnEnter", function(self)
-                    if self.SetBackdropColor then
-                        self:SetBackdropColor(0.18, 0.18, 0.22, 0.98)
-                    end
-                    if self.SetBackdropBorderColor then
-                        self:SetBackdropBorderColor(0.6, 0.6, 0.75, 1)
-                    end
+                    wkSetViewerCellHover(self, true)
                     showMacroCellTooltip(self)
                 end)
                 cell:SetScript("OnLeave", function(self)
-                    if self.SetBackdropColor then
-                        self:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
-                    end
-                    if self.SetBackdropBorderColor then
-                        self:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
-                    end
+                    wkSetViewerCellHover(self, false)
                     GameTooltip:Hide()
                 end)
                 frame.macroCells[i] = cell
@@ -5130,34 +5423,34 @@ end
 
 local viewerFrame
 function WoWKeyb:ShowKeybindingViewer(profileName)
-    local target = profileName or WoWKeybDB.currentProfile
-    if not target or target == BLIZZARD_DEFAULT_PROFILE then
-        print("|cffff0000[WoWKeyb]|r Select a non-default profile first.")
-        return
-    end
-    local profile = getStoredProfile(target)
-    if not profile then
-        print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
-        return
-    end
-
-    if viewerFrame and viewerFrame:IsShown() then
-        viewerFrame:Hide()
+    local liveOnly = profileName == nil or profileName == "" or profileName == BLIZZARD_DEFAULT_PROFILE
+    local target = profileName
+    if liveOnly then
+        target = nil
+    else
+        local profile = getStoredProfile(target)
+        if not profile then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+            return
+        end
     end
 
     if not viewerFrame then
         viewerFrame = CreateFrame("Frame", "WoWKeybViewerFrame", UIParent, "BackdropTemplate")
-        viewerFrame:SetSize(1020, 880)
+        viewerFrame:SetSize(1020, 1000)
         viewerFrame:SetPoint("CENTER")
         viewerFrame:SetFrameStrata("DIALOG")
         viewerFrame:SetFrameLevel(120)
+        viewerFrame:SetClampedToScreen(true)
         if viewerFrame.SetBackdrop then
             viewerFrame:SetBackdrop({
-                bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-                tile = true, tileSize = 32, edgeSize = 32,
-                insets = { left = 11, right = 12, top = 12, bottom = 11 },
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Buttons\\WHITE8X8",
+                tile = false, edgeSize = 1,
+                insets = { left = 1, right = 1, top = 1, bottom = 1 },
             })
+            viewerFrame:SetBackdropColor(0.05, 0.05, 0.07, 0.96)
+            viewerFrame:SetBackdropBorderColor(0.32, 0.32, 0.38, 1)
         end
         viewerFrame:SetMovable(true)
         viewerFrame:EnableMouse(true)
@@ -5165,92 +5458,117 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         viewerFrame:SetScript("OnDragStart", function() viewerFrame:StartMoving() end)
         viewerFrame:SetScript("OnDragStop", function() viewerFrame:StopMovingOrSizing() end)
 
+        local viewerContent = CreateFrame("Frame", nil, viewerFrame)
+        viewerContent:SetPoint("TOPLEFT", viewerFrame, "TOPLEFT", WK_VIEWER_LAYOUT.padX, -WK_VIEWER_LAYOUT.padTop)
+        viewerContent:SetPoint("BOTTOMRIGHT", viewerFrame, "BOTTOMRIGHT", -WK_VIEWER_LAYOUT.padX, WK_VIEWER_LAYOUT.padBottom)
+
         local title = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-        title:SetPoint("TOPLEFT", 18, -18)
-        title:SetText("WoWKeyb - Keybinding Viewer")
+        title:SetPoint("TOPLEFT", viewerContent, "TOPLEFT", 0, 0)
+        title:SetText("WoWKeyb")
 
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-        subtitle:SetText("Viewing current live bars/bindings. Save Current Bars works only for the active matching profile.")
+        subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapAfterTitle)
+        subtitle:SetText("Icons are what is bound right now. Pick Shift, Ctrl, or Alt to see that layer.")
+        viewerFrame.subtitle = subtitle
 
         local metaText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
+        metaText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapAfterSubtitle)
         metaText:SetText("")
         viewerFrame.metaText = metaText
 
-        local keyboardTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        keyboardTitle:SetPoint("TOPLEFT", metaText, "BOTTOMLEFT", 0, -12)
-        keyboardTitle:SetText("Keyboard (base keys)")
+        local layerHost = CreateFrame("Frame", nil, viewerFrame)
+        layerHost:SetPoint("TOPLEFT", metaText, "BOTTOMLEFT", 0, -10)
+        layerHost:SetSize(WK_VIEWER_LAYOUT.contentWidth, 24)
+        viewerFrame.layerButtons = {}
+        viewerFrame.modifierLayer = ""
+        local layerDefs = {
+            { id = "", label = "Base" },
+            { id = "SHIFT", label = "Shift" },
+            { id = "CTRL", label = "Ctrl" },
+            { id = "ALT", label = "Alt" },
+        }
+        for index, def in ipairs(layerDefs) do
+            local chip = CreateFrame("Button", nil, layerHost, "BackdropTemplate")
+            chip:SetSize(84, 22)
+            chip:SetPoint("LEFT", layerHost, "LEFT", (index - 1) * 92, 0)
+            chip.layerId = def.id
+            if chip.SetBackdrop then
+                chip:SetBackdrop({
+                    bgFile = "Interface\\Buttons\\WHITE8X8",
+                    edgeFile = "Interface\\Buttons\\WHITE8X8",
+                    tile = false, edgeSize = 1,
+                    insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                })
+            end
+            chip.label = chip:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            chip.label:SetPoint("CENTER")
+            chip.label:SetText(def.label)
+            chip:SetScript("OnClick", function(self)
+                viewerFrame.modifierLayer = self.layerId
+                refreshViewerFrame(viewerFrame)
+            end)
+            viewerFrame.layerButtons[index] = chip
+        end
 
         local keyboardContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
-        keyboardContainer:SetPoint("TOPLEFT", keyboardTitle, "BOTTOMLEFT", 0, -6)
-        keyboardContainer:SetSize(980, 220)
-        if keyboardContainer.SetBackdrop then
-            keyboardContainer:SetBackdrop({
-                bgFile = "Interface\\Buttons\\WHITE8X8",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                tile = false, edgeSize = 10,
-                insets = { left = 2, right = 2, top = 2, bottom = 2 },
-            })
-            keyboardContainer:SetBackdropColor(0.05, 0.05, 0.06, 0.9)
-            keyboardContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
-        end
+        keyboardContainer:SetPoint("TOPLEFT", layerHost, "BOTTOMLEFT", 0, -8)
+        keyboardContainer:SetSize(WK_VIEWER_LAYOUT.contentWidth, 276)
+        wkApplyViewerPanelBackdrop(keyboardContainer)
 
         viewerFrame.keyboardCells = {}
         local keyboardRows = {
-            { keys = { "1","2","3","4","5","6","7","8","9","0","-","=" }, indent = 12 },
-            { keys = { "Q","W","E","R","T","Y","U","I","O","P" }, indent = 44 },
-            { keys = { "A","S","D","F","G","H","J","K","L" }, indent = 62 },
-            { keys = { "Z","X","C","V","B","N","M" }, indent = 94 },
+            { keys = { "1","2","3","4","5","6","7","8","9","0","-","=" }, indent = 8 },
+            { keys = { "Q","W","E","R","T","Y","U","I","O","P" }, indent = 36 },
+            { keys = { "A","S","D","F","G","H","J","K","L" }, indent = 64 },
+            { keys = { "Z","X","C","V","B","N","M" }, indent = 96 },
         }
 
-        local keyW, keyH, gap = 66, 44, 6
+        local keyW, keyH, gap = 64, 58, 5
+        local kbdPad = 12
+        local kbdRowGap = 6
         for rowIdx, row in ipairs(keyboardRows) do
             for colIdx, key in ipairs(row.keys) do
                 local cell = CreateFrame("Frame", nil, keyboardContainer, "BackdropTemplate")
                 cell:SetSize(keyW, keyH)
-                cell:SetPoint("TOPLEFT", row.indent + (colIdx - 1) * (keyW + gap), -10 - (rowIdx - 1) * (keyH + 8))
-                if cell.SetBackdrop then
-                    cell:SetBackdrop({
-                        bgFile = "Interface\\Buttons\\WHITE8X8",
-                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                        tile = false, edgeSize = 8,
-                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-                    })
-                    cell:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
-                    cell:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
-                end
+                cell:SetPoint("TOPLEFT", row.indent + (colIdx - 1) * (keyW + gap), -kbdPad - (rowIdx - 1) * (keyH + kbdRowGap))
+                wkApplyViewerCellBackdrop(cell)
 
                 cell.icon = cell:CreateTexture(nil, "ARTWORK")
-                cell.icon:SetSize(18, 18)
-                cell.icon:SetPoint("LEFT", 4, 0)
+                cell.icon:SetPoint("TOPLEFT", 2, -2)
+                cell.icon:SetPoint("BOTTOMRIGHT", -2, 2)
                 cell.icon:Hide()
 
+                cell.keyPlate = cell:CreateTexture(nil, "OVERLAY")
+                cell.keyPlate:SetTexture("Interface\\Buttons\\WHITE8X8")
+                cell.keyPlate:SetPoint("BOTTOMLEFT", 2, 2)
+                cell.keyPlate:SetPoint("BOTTOMRIGHT", -2, 2)
+                cell.keyPlate:SetHeight(14)
+                cell.keyPlate:SetVertexColor(0, 0, 0, 0.72)
+                cell.keyPlate:Hide()
+
+                cell.layerMark = cell:CreateTexture(nil, "OVERLAY")
+                cell.layerMark:SetTexture("Interface\\Buttons\\WHITE8X8")
+                cell.layerMark:SetPoint("TOPLEFT", 3, -3)
+                cell.layerMark:SetSize(16, 3)
+                cell.layerMark:SetVertexColor(0.95, 0.78, 0.28, 1)
+                cell.layerMark:Hide()
+
                 cell.keyText = cell:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-                cell.keyText:SetPoint("TOPRIGHT", -4, -4)
+                cell.keyText:SetPoint("CENTER")
                 cell.keyText:SetText(key)
+                cell.keyText:SetShadowOffset(1, -1)
 
                 cell.countText = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-                cell.countText:SetPoint("BOTTOMRIGHT", -4, 4)
+                cell.countText:SetPoint("TOPRIGHT", -3, -3)
                 cell.countText:SetText("")
                 cell.countText:Hide()
 
                 cell:SetScript("OnEnter", function(self)
-                    if self.SetBackdropColor then
-                        self:SetBackdropColor(0.18, 0.18, 0.22, 0.98)
-                    end
-                    if self.SetBackdropBorderColor then
-                        self:SetBackdropBorderColor(0.6, 0.6, 0.75, 1)
-                    end
+                    wkSetViewerCellHover(self, true)
                     showKeyboardCellTooltip(self)
                 end)
                 cell:SetScript("OnLeave", function(self)
-                    if self.SetBackdropColor then
-                        self:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
-                    end
-                    if self.SetBackdropBorderColor then
-                        self:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
-                    end
+                    wkSetViewerCellHover(self, false)
                     GameTooltip:Hide()
                 end)
 
@@ -5259,46 +5577,29 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         end
 
         local barsTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        barsTitle:SetPoint("TOPLEFT", keyboardContainer, "BOTTOMLEFT", 0, -12)
+        barsTitle:SetPoint("TOPLEFT", keyboardContainer, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapSection)
         barsTitle:SetText("Blizzard Action Bars (1-5)")
 
         local barsContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
-        barsContainer:SetPoint("TOPLEFT", barsTitle, "BOTTOMLEFT", 0, -6)
+        barsContainer:SetPoint("TOPLEFT", barsTitle, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapTitleToPanel)
         -- Keep a large footer gap so the bottom action bar never overlaps controls.
-        barsContainer:SetSize(980, 322)
-        if barsContainer.SetBackdrop then
-            barsContainer:SetBackdrop({
-                bgFile = "Interface\\Buttons\\WHITE8X8",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                tile = false, edgeSize = 10,
-                insets = { left = 2, right = 2, top = 2, bottom = 2 },
-            })
-            barsContainer:SetBackdropColor(0.05, 0.05, 0.06, 0.9)
-            barsContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
-        end
+        barsContainer:SetSize(WK_VIEWER_LAYOUT.contentWidth, 322)
+        wkApplyViewerPanelBackdrop(barsContainer)
 
         viewerFrame.barCells = {}
         local slotSize, slotGap, rowHeight = 38, 5, 60
+        local barsPad = WK_VIEWER_LAYOUT.panelInnerPad
         for barIdx = 1, 5 do
             local barLabel = barsContainer:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            barLabel:SetPoint("TOPLEFT", 10, -12 - (barIdx - 1) * rowHeight)
+            barLabel:SetPoint("TOPLEFT", barsContainer, "TOPLEFT", barsPad, -12 - (barIdx - 1) * rowHeight)
             barLabel:SetText("Bar " .. tostring(barIdx))
 
             viewerFrame.barCells[barIdx] = {}
             for slotIdx = 1, 12 do
                 local cell = CreateFrame("Frame", nil, barsContainer, "BackdropTemplate")
                 cell:SetSize(slotSize, slotSize)
-                cell:SetPoint("TOPLEFT", 80 + (slotIdx - 1) * (slotSize + slotGap), -8 - (barIdx - 1) * rowHeight)
-                if cell.SetBackdrop then
-                    cell:SetBackdrop({
-                        bgFile = "Interface\\Buttons\\WHITE8X8",
-                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                        tile = false, edgeSize = 8,
-                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-                    })
-                    cell:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
-                    cell:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
-                end
+                cell:SetPoint("TOPLEFT", 80 + (slotIdx - 1) * (slotSize + slotGap), -(barsPad - 2) - (barIdx - 1) * rowHeight)
+                wkApplyViewerCellBackdrop(cell)
 
                 cell.icon = cell:CreateTexture(nil, "ARTWORK")
                 cell.icon:SetPoint("TOPLEFT", 2, -2)
@@ -5325,21 +5626,11 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
                 cell.viewerSlot = ((barIdx - 1) * 12) + slotIdx
 
                 cell:SetScript("OnEnter", function(self)
-                    if self.SetBackdropColor then
-                        self:SetBackdropColor(0.18, 0.18, 0.22, 0.98)
-                    end
-                    if self.SetBackdropBorderColor then
-                        self:SetBackdropBorderColor(0.6, 0.6, 0.75, 1)
-                    end
+                    wkSetViewerCellHover(self, true)
                     showBarCellTooltip(self)
                 end)
                 cell:SetScript("OnLeave", function(self)
-                    if self.SetBackdropColor then
-                        self:SetBackdropColor(0.12, 0.12, 0.15, 0.95)
-                    end
-                    if self.SetBackdropBorderColor then
-                        self:SetBackdropBorderColor(0.35, 0.35, 0.4, 0.95)
-                    end
+                    wkSetViewerCellHover(self, false)
                     GameTooltip:Hide()
                 end)
 
@@ -5348,26 +5639,17 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         end
 
         local macrosTitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        macrosTitle:SetPoint("TOPLEFT", barsContainer, "BOTTOMLEFT", 0, -12)
+        macrosTitle:SetPoint("TOPLEFT", barsContainer, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapSection)
         macrosTitle:SetText("Macros In Profile")
 
         local macrosContainer = CreateFrame("Frame", nil, viewerFrame, "BackdropTemplate")
-        macrosContainer:SetPoint("TOPLEFT", macrosTitle, "BOTTOMLEFT", 0, -6)
-        macrosContainer:SetSize(980, 96)
-        if macrosContainer.SetBackdrop then
-            macrosContainer:SetBackdrop({
-                bgFile = "Interface\\Buttons\\WHITE8X8",
-                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-                tile = false, edgeSize = 10,
-                insets = { left = 2, right = 2, top = 2, bottom = 2 },
-            })
-            macrosContainer:SetBackdropColor(0.05, 0.05, 0.06, 0.9)
-            macrosContainer:SetBackdropBorderColor(0.25, 0.25, 0.3, 0.9)
-        end
+        macrosContainer:SetPoint("TOPLEFT", macrosTitle, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapTitleToPanel)
+        macrosContainer:SetSize(WK_VIEWER_LAYOUT.contentWidth, 96)
+        wkApplyViewerPanelBackdrop(macrosContainer)
 
         local macroScroll = CreateFrame("ScrollFrame", nil, macrosContainer, "UIPanelScrollFrameTemplate")
-        macroScroll:SetPoint("TOPLEFT", 8, -8)
-        macroScroll:SetPoint("BOTTOMRIGHT", -26, 8)
+        macroScroll:SetPoint("TOPLEFT", WK_VIEWER_LAYOUT.macroScrollInset, -WK_VIEWER_LAYOUT.macroScrollInset)
+        macroScroll:SetPoint("BOTTOMRIGHT", -WK_VIEWER_LAYOUT.macroScrollRightInset, WK_VIEWER_LAYOUT.macroScrollInset)
         local macroScrollContent = CreateFrame("Frame", nil, macroScroll)
         macroScrollContent:SetSize(1, 1)
         macroScroll:SetScrollChild(macroScrollContent)
@@ -5382,7 +5664,6 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local refreshBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         refreshBtn:SetSize(170, 22)
-        refreshBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 150, 18)
         refreshBtn:SetText("Save Current Bars")
         refreshBtn:SetScript("OnClick", function()
             local targetProfile = viewerFrame and viewerFrame.profileName
@@ -5417,7 +5698,6 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local applyBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         applyBtn:SetSize(120, 22)
-        applyBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 0, 18)
         applyBtn:SetText("Apply Profile")
         applyBtn:SetScript("OnClick", function()
             local target = viewerFrame and viewerFrame.profileName
@@ -5443,14 +5723,30 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
 
         local closeBtn = CreateFrame("Button", nil, viewerFrame, "UIPanelButtonTemplate")
         closeBtn:SetSize(120, 22)
-        closeBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", -140, 18)
         closeBtn:SetText("Close")
         closeBtn:SetScript("OnClick", function() viewerFrame:Hide() end)
+        viewerFrame.closeBtn = closeBtn
+
+        applyBtn:SetPoint("BOTTOM", viewerFrame, "BOTTOM", 0, WK_VIEWER_LAYOUT.btnBottomPad)
+        closeBtn:SetPoint("BOTTOMRIGHT", applyBtn, "BOTTOMLEFT", -WK_VIEWER_LAYOUT.btnBetween, 0)
+        refreshBtn:SetPoint("BOTTOMLEFT", applyBtn, "BOTTOMRIGHT", WK_VIEWER_LAYOUT.btnBetween, 0)
     end
 
+    viewerFrame.liveOnly = liveOnly
     viewerFrame.profileName = target
+    if viewerFrame.modifierLayer == nil then
+        viewerFrame.modifierLayer = ""
+    end
     viewerFrame:Show()
     refreshViewerFrame(viewerFrame)
+end
+
+function WoWKeyb:ToggleLiveViewer()
+    if viewerFrame and viewerFrame:IsShown() and viewerFrame.liveOnly then
+        viewerFrame:Hide()
+        return
+    end
+    WoWKeyb:ShowKeybindingViewer(nil)
 end
 
 local exportFrame
@@ -5554,6 +5850,7 @@ function WoWKeyb:ShowExportDialog(profileName)
         exportFrame:SetPoint("CENTER")
         exportFrame:SetFrameStrata("DIALOG")
         exportFrame:SetFrameLevel(110)
+        exportFrame:SetClampedToScreen(true)
         if exportFrame.SetBackdrop then
             exportFrame:SetBackdrop({
                 bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -6634,13 +6931,18 @@ local function createMinimapButton()
             icon = "Interface\\AddOns\\WoWKeyb\\media\\wowkeyb",
             iconCoords = { 0.02, 0.98, 0.02, 0.98 },
             OnClick = function(_, mouseButton)
-                if mouseButton == "LeftButton" then
+                if mouseButton == "RightButton" then
                     openAddonSettings()
+                    return
+                end
+                if WoWKeyb.ToggleLiveViewer then
+                    WoWKeyb:ToggleLiveViewer()
                 end
             end,
             OnTooltipShow = function(tooltip)
                 tooltip:AddLine("WoWKeyb")
-                tooltip:AddLine("Left-click: Open settings", 0.8, 0.8, 0.8)
+                tooltip:AddLine("Left-click: Open keybind keyboard", 0.8, 0.8, 0.8)
+                tooltip:AddLine("Right-click: Profile settings", 0.8, 0.8, 0.8)
                 tooltip:AddLine("Drag: Move icon", 0.8, 0.8, 0.8)
             end,
         })
@@ -6941,21 +7243,34 @@ local function slashHandler(msg)
         promptImportSharedToken(arg)
         return
 
-    elseif cmd == "view" or cmd == "v" then
-        local target = arg ~= "" and arg or WoWKeybDB.currentProfile
-        if not target then
-            print("|cffff0000[WoWKeyb]|r No target profile. Usage: /wowkeyb view <profile name>")
+    elseif cmd == "view" or cmd == "v" or cmd == "keyboard" or cmd == "k" or cmd == "" then
+        if arg == "" or arg == "live" then
+            WoWKeyb:ShowKeybindingViewer(nil)
             return
         end
-        if target == BLIZZARD_DEFAULT_PROFILE then
-            print("|cffff0000[WoWKeyb]|r Blizzard Default has no profile mapping to view.")
+        if arg == BLIZZARD_DEFAULT_PROFILE then
+            WoWKeyb:ShowKeybindingViewer(nil)
             return
         end
-        if not getStoredProfile(target) then
-            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(target))
+        if not getStoredProfile(arg) then
+            print("|cffff0000[WoWKeyb]|r Profile not found: " .. tostring(arg))
             return
         end
-        WoWKeyb:ShowKeybindingViewer(target)
+        WoWKeyb:ShowKeybindingViewer(arg)
+        return
+
+    elseif cmd == "help" or cmd == "h" or cmd == "?" then
+        print("|cff00ff00[WoWKeyb]|r Commands:")
+        print("  /wowkeyb              - Open the in-game keybind keyboard")
+        print("  /wowkeyb view [name]  - Open live binds, or a stored profile map")
+        print("  /wowkeyb apply <name>  - Apply a stored profile")
+        print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
+        print("  /wowkeyb toggle       - Toggle between last two profiles")
+        print("  /wowkeyb import <name> - Import profile from profile code")
+        print("  /wowkeyb export [name] - Export selected profile as share code string")
+        print("  /wowkeyb share <player> [name] - Whisper a profile to another WoWKeyb user")
+        print("  /wowkeyb list         - List stored profiles")
+        print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
         return
 
     else
@@ -6996,6 +7311,7 @@ function WoWKeyb:ShowImportDialog(profileName)
         importFrame:SetPoint("CENTER")
         importFrame:SetFrameStrata("DIALOG")
         importFrame:SetFrameLevel(100)
+        importFrame:SetClampedToScreen(true)
         if importFrame.SetBackdrop then
             importFrame:SetBackdrop({
                 bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -7433,4 +7749,4 @@ do
     end)
 end
 
-print("|cff00ff00[WoWKeyb]|r Loaded. Type /wowkeyb for help.")
+print("|cff00ff00[WoWKeyb]|r Loaded. Type /wowkeyb to open the keyboard, or /wowkeyb help.")

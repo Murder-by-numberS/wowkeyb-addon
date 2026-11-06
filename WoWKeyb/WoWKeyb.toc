@@ -1,8 +1,8 @@
-## Interface: 120001
+## Interface: 120105
 ## Title: WoWKeyb
 ## Notes: Apply keybinding profiles from WoWKeyb (wowkeyb.gg)
 ## Author: WoWKeyb
-## Version: 1.2.85
+## Version: 1.2.87
 ## SavedVariables: WoWKeybDB
 
 libs/LibStub/LibStub.lua
