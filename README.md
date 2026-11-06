@@ -68,7 +68,8 @@ Both directions use the same `WK1:` share code format.
 | `/wowkeyb apply <name>` | Apply a stored profile |
 | `/wowkeyb switch <name>` | Switch to a profile (same as apply) |
 | `/wowkeyb toggle` | **Toggle between last two profiles** – great for switching specs |
-| `/wowkeyb list` | List stored profiles |
+| `/wowkeyb profiles` | Browse imported profiles |
+| `/wowkeyb list` | Same as profiles |
 | `/wowkeyb delete <name>` | Delete a stored profile |
 
 ### Toggle Between Profiles

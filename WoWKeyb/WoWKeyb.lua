@@ -711,6 +711,8 @@ for i = 1, 12 do SLOT_COMMANDS[84 + i] = "MULTIACTIONBAR7BUTTON" .. i end
 
 local VIEWER_BAR_COUNT = 8
 local VIEWER_SLOT_COUNT = VIEWER_BAR_COUNT * 12
+local isActionBarShown
+local ensureLayoutBarsFromGame
 
 -- Convert logical WoWKeyb slot (1..60 across bars 1..5) to Blizzard action slot IDs
 -- used by PlaceAction/GetActionInfo.
@@ -1066,7 +1068,7 @@ local function resolveSlotFromLayoutKeys(profile, wowKey)
             local slotKey = normalizeKey(slotKeys[slotIdx] or "")
             if slotKey == wowKey then
                 local slot = ((barIdx - 1) * 12) + slotIdx
-                if slot >= 1 and slot <= 60 then
+                if slot >= 1 and slot <= VIEWER_SLOT_COUNT then
                     return slot
                 end
             end
@@ -1103,7 +1105,7 @@ local function resolveExplicitSlotCandidate(keybind, layoutBarIndexById)
 
     for _, candidate in ipairs(candidates) do
         local slot = (barIdx * 12) + candidate + 1
-        if slot >= 1 and slot <= 60 then
+        if slot >= 1 and slot <= VIEWER_SLOT_COUNT then
             return slot
         end
     end
@@ -1173,7 +1175,7 @@ local function resolvePreferredSlot(profile, keybind, wowKey, layoutBarIndexById
     local layoutMap = KEY_TO_LAYOUT_SLOT[wowKey]
     if layoutMap then
         local slot = (layoutMap.barIndex * 12) + layoutMap.slotIndex + 1
-        if slot >= 1 and slot <= 60 then
+        if slot >= 1 and slot <= VIEWER_SLOT_COUNT then
             return slot
         end
     end
@@ -1235,12 +1237,22 @@ local function readUtilityActionFromActionSlot(slot, actionTypeOverride, actionI
         local itemId = tonumber(actionId)
         local itemName = ""
         local itemIcon = texture
+        local isTrinket = false
         if itemId then
+            local equipSlot = nil
             if type(GetItemInfo) == "function" then
-                local n, _, _, _, _, _, _, _, _, i = GetItemInfo(itemId)
+                local n, _, _, _, _, _, _, _, slotName, i = GetItemInfo(itemId)
                 if n then itemName = tostring(n) end
+                if slotName then equipSlot = tostring(slotName) end
                 if not itemIcon and i then itemIcon = i end
             end
+            if not equipSlot and C_Item and type(C_Item.GetItemInventoryTypeByID) == "function" then
+                local okSlot, inventoryType = pcall(C_Item.GetItemInventoryTypeByID, itemId)
+                if okSlot and tonumber(inventoryType) == 12 then
+                    equipSlot = "INVTYPE_TRINKET"
+                end
+            end
+            isTrinket = equipSlot == "INVTYPE_TRINKET"
             if itemName == "" and C_Item and type(C_Item.GetItemNameByID) == "function" then
                 local okName, resolvedName = pcall(C_Item.GetItemNameByID, itemId)
                 if okName and resolvedName then
@@ -1259,6 +1271,15 @@ local function readUtilityActionFromActionSlot(slot, actionTypeOverride, actionI
                 name = "Toy",
                 icon = itemIcon or "",
                 actionType = "toy",
+            }
+        end
+
+        if isTrinket then
+            return {
+                spellId = "item:" .. tostring(itemId or actionId or ""),
+                name = itemName ~= "" and itemName or "Trinket",
+                icon = itemIcon or "",
+                actionType = "trinket",
             }
         end
 
@@ -2018,7 +2039,7 @@ local function syncProfileSpellsFromActionBars(profileName)
 
     local rebuiltKeybinds = {}
     local rebuiltBySlot = {}
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local actionSlot = toBlizzardActionSlot(slot)
         local actionType, actionId = GetActionInfo(actionSlot)
         local previous = previousBySlot[slot]
@@ -2136,7 +2157,7 @@ local function syncProfileSpellsFromActionBars(profileName)
         }, "\31")
     end
 
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         if slotSignature(previousBySlot[slot]) ~= slotSignature(rebuiltBySlot[slot]) then
             changed = changed + 1
         end
@@ -2197,6 +2218,9 @@ local function syncProfileSpellsFromActionBars(profileName)
         return tostring(a.name or ""):lower() < tostring(b.name or ""):lower()
     end)
     profile.macros = mergedMacros
+    if ensureLayoutBarsFromGame then
+        ensureLayoutBarsFromGame(profile)
+    end
 
     return true, changed
 end
@@ -2225,6 +2249,55 @@ local function firstBindingForCommand(command)
         end
     end
     return nil
+end
+
+ensureLayoutBarsFromGame = function(profile)
+    if type(profile) ~= "table" then
+        return
+    end
+    profile.layout = type(profile.layout) == "table" and profile.layout or {}
+    local bars = type(profile.layout.bars) == "table" and profile.layout.bars or {}
+    for barIdx = 1, VIEWER_BAR_COUNT do
+        local bar = bars[barIdx]
+        local created = false
+        if type(bar) ~= "table" then
+            created = true
+            bar = {
+                id = "bar" .. tostring(barIdx),
+                slots = 12,
+                slotKeys = {},
+                position = {
+                    anchor = "center",
+                    x = 1280,
+                    y = 720,
+                },
+                orientation = "horizontal",
+                scale = 1,
+            }
+            bars[barIdx] = bar
+        end
+        bar.slots = tonumber(bar.slots) or 12
+        if barIdx == 1 then
+            bar.enabled = true
+        elseif isActionBarShown then
+            bar.enabled = isActionBarShown(barIdx) and true or false
+        elseif bar.enabled == nil then
+            bar.enabled = true
+        end
+        if created then
+            bar.slotKeys = {}
+            for slotIdx = 1, 12 do
+                local globalSlot = ((barIdx - 1) * 12) + slotIdx
+                local command = SLOT_COMMANDS[globalSlot]
+                local wowKey = command and firstBindingForCommand(command) or nil
+                bar.slotKeys[slotIdx] = wowBindingToProfileKey(wowKey)
+            end
+        end
+    end
+    profile.layout.bars = bars
+    if not profile.layout.barMode and not profile.layout.bar_mode then
+        profile.layout.barMode = "blizzard"
+    end
 end
 
 local function syncProfileLayoutKeysFromBindings(profileName)
@@ -2508,31 +2581,9 @@ local function createProfileFromCurrentGameContext()
         },
     }
 
-    local bars = {}
-    for barIdx = 1, 5 do
-        local bar = {
-            id = "bar" .. tostring(barIdx),
-            slots = 12,
-            slotKeys = {},
-            position = {
-                anchor = "center",
-                x = 1280,
-                y = 720,
-            },
-            orientation = "horizontal",
-            scale = 1,
-        }
-        for slotIdx = 1, 12 do
-            local globalSlot = ((barIdx - 1) * 12) + slotIdx
-            local command = SLOT_COMMANDS[globalSlot]
-            local wowKey = command and firstBindingForCommand(command) or nil
-            bar.slotKeys[slotIdx] = wowBindingToProfileKey(wowKey)
-        end
-        bars[barIdx] = bar
-    end
-    profile.layout.bars = bars
+    ensureLayoutBarsFromGame(profile)
 
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local actionSlot = toBlizzardActionSlot(slot)
         local spell = readMacroFromActionSlot(actionSlot) or readSpellFromActionSlot(actionSlot)
         if spell then
@@ -2556,14 +2607,58 @@ local function createProfileFromCurrentGameContext()
     return profileName, profile
 end
 
-local function ensureBlizzardBarsVisible()
-    pcall(function() SetCVar("alwaysShowActionBars", "1") end)
-    pcall(function() SetCVar("showMultiActionBar1", "1") end)
-    pcall(function() SetCVar("showMultiActionBar2", "1") end)
-    pcall(function() SetCVar("showMultiActionBar3", "1") end)
-    pcall(function() SetCVar("showMultiActionBar4", "1") end)
+local function layoutBarEnabled(bar, barIndex)
+    if barIndex == 1 then
+        return true
+    end
+    if type(bar) ~= "table" then
+        return true
+    end
+    local flag = bar.enabled
+    if flag == nil then
+        flag = bar.is_enabled
+    end
+    if flag == false or flag == 0 or flag == "0" or flag == "false" then
+        return false
+    end
+    return true
+end
+
+local function setActionBarShown(barIndex, shown)
+    if barIndex < 2 or barIndex > VIEWER_BAR_COUNT then
+        return
+    end
+    local cvarValue = shown and "1" or "0"
+    pcall(function() SetCVar("showMultiActionBar" .. (barIndex - 1), cvarValue) end)
+    if Settings and type(Settings.SetValue) == "function" then
+        pcall(Settings.SetValue, "PROXY_SHOW_ACTIONBAR_" .. barIndex, shown and true or false)
+    end
+end
+
+local function refreshActionBarVisibility()
     if MultiActionBar_Update then pcall(MultiActionBar_Update) end
     if MultiActionBar_UpdateGrid then pcall(MultiActionBar_UpdateGrid) end
+end
+
+local function ensureBlizzardBarsVisible()
+    pcall(function() SetCVar("alwaysShowActionBars", "1") end)
+    for barIndex = 2, 5 do
+        setActionBarShown(barIndex, true)
+    end
+    refreshActionBarVisibility()
+end
+
+local function applyProfileBarVisibility(profile)
+    local bars = profile and profile.layout and profile.layout.bars
+    if type(bars) ~= "table" or #bars == 0 then
+        ensureBlizzardBarsVisible()
+        return
+    end
+    local count = math.min(#bars, VIEWER_BAR_COUNT)
+    for barIndex = 2, count do
+        setActionBarShown(barIndex, layoutBarEnabled(bars[barIndex], barIndex))
+    end
+    refreshActionBarVisibility()
 end
 
 local function setDefaultBarsAlpha(alpha)
@@ -2593,12 +2688,11 @@ end
 
 local function applyBarModeVisibility(useCustomBars)
     if useCustomBars then
-        pcall(function() SetCVar("showMultiActionBar1", "0") end)
-        pcall(function() SetCVar("showMultiActionBar2", "0") end)
-        pcall(function() SetCVar("showMultiActionBar3", "0") end)
-        pcall(function() SetCVar("showMultiActionBar4", "0") end)
+        for barIndex = 2, 5 do
+            setActionBarShown(barIndex, false)
+        end
         pcall(function() SetCVar("alwaysShowActionBars", "0") end)
-        if MultiActionBar_Update then pcall(MultiActionBar_Update) end
+        refreshActionBarVisibility()
         setDefaultBarsAlpha(0)
     else
         ensureBlizzardBarsVisible()
@@ -2613,7 +2707,7 @@ local function applyBlizzardDefaultProfile()
 
     -- Remove all keybindings for Blizzard action bar commands when returning
     -- to Blizzard Default profile, so no WoWKeyb-applied binds remain.
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local command = SLOT_COMMANDS[slot]
         if command and type(GetBindingKey) == "function" then
             local keys = { GetBindingKey(command) }
@@ -2659,7 +2753,7 @@ local function clearActionBarsAndBindings()
         return false, "Cannot clear bars and bindings while in combat"
     end
 
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local actionSlot = toBlizzardActionSlot(slot)
         if actionSlot and type(ClearAction) == "function" then
             pcall(function()
@@ -2668,7 +2762,7 @@ local function clearActionBarsAndBindings()
         end
     end
 
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local command = SLOT_COMMANDS[slot]
         if command and type(GetBindingKey) == "function" then
             local keys = { GetBindingKey(command) }
@@ -2748,7 +2842,8 @@ applyProfile = function(profile)
 
     local hasLayout = profile and profile.layout and profile.layout.bars and #profile.layout.bars > 0
     clearCustomLayoutFrames()
-    applyBarModeVisibility(false)
+    applyProfileBarVisibility(profile)
+    setDefaultBarsAlpha(1)
 
     local PickupSpell = _G.PickupSpell
     if C_Spell and type(C_Spell.PickupSpell) == "function" then
@@ -2771,7 +2866,7 @@ applyProfile = function(profile)
                     local wowLayoutKey = normalizeKey(rawKey)
                     if wowLayoutKey and wowLayoutKey ~= "" then
                         local slot = ((barIdx - 1) * 12) + slotIdx
-                        if slot >= 1 and slot <= 60 and SLOT_COMMANDS[slot] then
+                        if slot >= 1 and slot <= VIEWER_SLOT_COUNT and SLOT_COMMANDS[slot] then
                             layoutSlotToKey[slot] = wowLayoutKey
                         end
                     end
@@ -2780,9 +2875,20 @@ applyProfile = function(profile)
         end
     end
 
+    -- Only the bars stored on this profile are cleared and rewritten.
+    -- Extra bars the profile does not mention stay as they are in game.
+    local managedSlotCount = 60
+    if hasLayout then
+        local barCount = math.min(#profile.layout.bars, VIEWER_BAR_COUNT)
+        if barCount < 1 then
+            barCount = 1
+        end
+        managedSlotCount = barCount * 12
+    end
+
     -- Remove existing bindings for action bar commands before re-applying.
     -- This prevents stale bindings from older profiles from sticking around.
-    for slot = 1, 60 do
+    for slot = 1, managedSlotCount do
         local command = SLOT_COMMANDS[slot]
         if command then
             local keys = { GetBindingKey(command) }
@@ -2896,7 +3002,7 @@ applyProfile = function(profile)
         -- In layout mode, clear slots that are not populated by the imported profile.
         -- This prevents stale spells from previous profiles appearing as "wrong replacements".
         if type(ClearAction) == "function" then
-            for slot = 1, 60 do
+            for slot = 1, managedSlotCount do
                 if not slotToData[slot] then
                     local actionSlot = toBlizzardActionSlot(slot)
                     if not actionSlotHasMacro(actionSlot) then
@@ -3901,7 +4007,7 @@ local function serializeSyncedProfile(profileName, profile)
     local layoutChunks = {}
     local screenW = tonumber(layout.screenWidth) or 2560
     local screenH = tonumber(layout.screenHeight) or 1440
-    for _, bar in ipairs(bars) do
+    for barIndex, bar in ipairs(bars) do
         local pos = bar.position or {}
         local px = tonumber(pos.x) or (screenW / 2)
         local py = tonumber(pos.y) or (screenH / 2)
@@ -3920,6 +4026,7 @@ local function serializeSyncedProfile(profileName, profile)
             ',"y":', tostring(math.floor(py + 0.5)),
             '},"orientation":"', jsonEscape(bar.orientation or "horizontal"),
             '","scale":', tostring(tonumber(bar.scale) or 1),
+            ',"enabled":', layoutBarEnabled(bar, barIndex) and "true" or "false",
             '}'
         })
         table.insert(layoutChunks, barJson)
@@ -4211,7 +4318,7 @@ local function buildViewerData(profile)
 
     local bars = profile and profile.layout and profile.layout.bars or {}
     local layoutKeyToSlots = {}
-    for barIdx = 1, 5 do
+    for barIdx = 1, VIEWER_BAR_COUNT do
         local bar = bars[barIdx]
         local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
             or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
@@ -4358,7 +4465,7 @@ local function buildViewerData(profile)
         end
     end
 
-    for barIdx = 1, 5 do
+    for barIdx = 1, VIEWER_BAR_COUNT do
         local bar = bars[barIdx]
         local slotKeys = (bar and type(bar.slotKeys) == "table" and bar.slotKeys)
             or (bar and type(bar.slot_keys) == "table" and bar.slot_keys)
@@ -4384,7 +4491,7 @@ local function buildViewerData(profile)
     -- Build keyboard entries from final resolved slot data so layout.slotKeys (e.g. Shift+5)
     -- are reflected even when original keybind records have empty/missing key fields.
     keyToEntries = {}
-    for slot = 1, 60 do
+    for slot = 1, VIEWER_SLOT_COUNT do
         local entry = slotData[slot]
         if entry and entry.key and entry.key ~= "" then
             local normalizedEntryKey = normalizeKey(entry.key)
@@ -5160,6 +5267,44 @@ local function wkApplyViewerCellBackdrop(f)
     f:SetBackdropBorderColor(unpack(WK_VIEWER_THEME.cellBorder))
 end
 
+local function wkCreatePageSwitcher(parent, activePage)
+    local host = CreateFrame("Frame", nil, parent)
+    host:SetSize(188, 22)
+    local pages = {
+        { id = "map", label = "Map" },
+        { id = "settings", label = "Profiles" },
+    }
+    for index, def in ipairs(pages) do
+        local chip = CreateFrame("Button", nil, host, "BackdropTemplate")
+        chip:SetSize(90, 22)
+        chip:SetPoint("LEFT", host, "LEFT", (index - 1) * 96, 0)
+        if chip.SetBackdrop then
+            chip:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Buttons\\WHITE8X8",
+                tile = false, edgeSize = 1,
+                insets = { left = 1, right = 1, top = 1, bottom = 1 },
+            })
+            if def.id == activePage then
+                chip:SetBackdropColor(0.30, 0.36, 0.48, 1)
+                chip:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+            else
+                chip:SetBackdropColor(0.12, 0.12, 0.15, 1)
+                chip:SetBackdropBorderColor(0.34, 0.34, 0.40, 1)
+            end
+        end
+        local label = chip:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        label:SetPoint("CENTER")
+        label:SetText(def.label)
+        chip:SetScript("OnClick", function()
+            if def.id ~= activePage and WoWKeyb.Open then
+                WoWKeyb:Open(def.id)
+            end
+        end)
+    end
+    return host
+end
+
 local function wkSetViewerCellHover(f, hover)
     if not f or not f.SetBackdropColor then return end
     if hover then
@@ -5215,6 +5360,7 @@ local function isViewerActionBarEnabled(barIndex)
     end
     return barIndex == 1
 end
+isActionBarShown = isViewerActionBarEnabled
 
 local function layoutViewerActionBars(frame)
     if not frame or not frame.barCells or not frame.barsContainer then
@@ -5768,6 +5914,10 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         title:SetPoint("TOPLEFT", viewerContent, "TOPLEFT", 0, 0)
         title:SetText("WoWKeyb")
 
+        local pageSwitch = wkCreatePageSwitcher(viewerFrame, "map")
+        pageSwitch:SetPoint("TOPRIGHT", viewerFrame, "TOPRIGHT", -20, -18)
+        pageSwitch:SetFrameLevel(viewerFrame:GetFrameLevel() + 20)
+
         local subtitle = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -WK_VIEWER_LAYOUT.gapAfterTitle)
         subtitle:SetText("Icons are what is bound right now. Pick Shift, Ctrl, or Alt to see that layer.")
@@ -6087,8 +6237,13 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
     if viewerFrame.modifierLayer == nil then
         viewerFrame.modifierLayer = ""
     end
+    viewerFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    viewerFrame:SetFrameLevel(220)
     viewerFrame:Show()
     refreshViewerFrame(viewerFrame)
+    if WoWKeyb.HideSettingsPage then
+        WoWKeyb:HideSettingsPage()
+    end
 end
 
 function WoWKeyb:ToggleLiveViewer()
@@ -6283,6 +6438,8 @@ function WoWKeyb:ShowExportDialog(profileName)
         closeBtn:SetScript("OnClick", function() exportFrame:Hide() end)
     end
 
+    exportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    exportFrame:SetFrameLevel(230)
     exportFrame:Show()
     local keybindCount, macroCount = computeExportSummaryCounts(profile)
     if exportFrame.summaryText then
@@ -6293,15 +6450,841 @@ function WoWKeyb:ShowExportDialog(profileName)
     WoWKeybExportEdit:HighlightText()
 end
 
-local function openAddonSettings()
-    if Settings and Settings.OpenToCategory and WoWKeyb.settingsCategoryID then
-        Settings.OpenToCategory(WoWKeyb.settingsCategoryID)
+local profileBrowser
+local CLASS_FILE_BY_NAME = {
+    deathknight = "DEATHKNIGHT",
+    demonhunter = "DEMONHUNTER",
+    druid = "DRUID",
+    evoker = "EVOKER",
+    hunter = "HUNTER",
+    mage = "MAGE",
+    monk = "MONK",
+    paladin = "PALADIN",
+    priest = "PRIEST",
+    rogue = "ROGUE",
+    shaman = "SHAMAN",
+    warlock = "WARLOCK",
+    warrior = "WARRIOR",
+}
+
+local function profileBrowserClassColor(profile)
+    local token = normalizeClassName(profile and profile.class)
+    local classFile = token and CLASS_FILE_BY_NAME[token] or nil
+    local color = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile] or nil
+    if color then
+        return color.r, color.g, color.b
+    end
+    return 0.86, 0.86, 0.9
+end
+
+local function profileBrowserContext(profile)
+    local classLabel = formatClassLabel(profile and profile.class)
+    local specValue = tostring(profile and (profile.spec or profile.spec_id or profile.specId or profile.specialization) or "")
+    local heroValue = formatHeroTalentLabel(
+        profile and (profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId),
+        profile and (profile.heroTalentId or profile.hero_talent_id)
+    )
+    if specValue == "-" then specValue = "" end
+    if heroValue == "-" then heroValue = "" end
+    local parts = { classLabel }
+    if specValue ~= "" then parts[#parts + 1] = specValue end
+    if heroValue ~= "" then parts[#parts + 1] = heroValue end
+    return classLabel, table.concat(parts, "   ·   "), (classLabel .. " " .. specValue .. " " .. heroValue)
+end
+
+local function profileBrowserMismatchLabel(reasonSummary)
+    local reason = tostring(reasonSummary or "")
+    if reason:find("class", 1, true) then return "Other class" end
+    if reason:find("spec", 1, true) then return "Other spec" end
+    if reason:find("hero", 1, true) then return "Other hero" end
+    return "Different setup"
+end
+
+local function raiseWoWKeybPopup(frame, level)
+    if not frame then return end
+    frame:SetFrameStrata("FULLSCREEN_DIALOG")
+    frame:SetFrameLevel(level or 200)
+end
+
+function WoWKeyb:RefreshProfileBrowser()
+    if profileBrowser and profileBrowser:IsShown() and profileBrowser.Refresh then
+        profileBrowser:Refresh(false)
+    end
+end
+
+function WoWKeyb:ShowProfileBrowser()
+    if not profileBrowser then
+        local         frame = CreateFrame("Frame", "WoWKeybProfileBrowser", UIParent, "BackdropTemplate")
+        frame:SetSize(700, 640)
+        frame:SetPoint("CENTER")
+        frame:SetFrameStrata("FULLSCREEN_DIALOG")
+        frame:SetFrameLevel(180)
+        frame:SetClampedToScreen(true)
+        frame:SetMovable(true)
+        frame:EnableMouse(true)
+        frame:EnableKeyboard(true)
+        frame:RegisterForDrag("LeftButton")
+        frame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+        frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+        frame:SetScript("OnKeyDown", function(self, key)
+            if key == "ESCAPE" then
+                self:SetPropagateKeyboardInput(false)
+                self:Hide()
+            else
+                self:SetPropagateKeyboardInput(true)
+            end
+        end)
+        if frame.SetBackdrop then
+            frame:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Buttons\\WHITE8X8",
+                tile = false, edgeSize = 1,
+                insets = { left = 1, right = 1, top = 1, bottom = 1 },
+            })
+            frame:SetBackdropColor(0.05, 0.05, 0.07, 0.97)
+            frame:SetBackdropBorderColor(0.32, 0.32, 0.38, 1)
+        end
+
+        local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOPLEFT", 18, -16)
+        title:SetText("WoWKeyb")
+
+        local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+        subtitle:SetText("Profiles")
+        frame.subtitle = subtitle
+
+        local closeX = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+        closeX:SetPoint("TOPRIGHT", -4, -4)
+        closeX:SetScript("OnClick", function() frame:Hide() end)
+
+        local pageSwitch = wkCreatePageSwitcher(frame, "settings")
+        pageSwitch:SetPoint("RIGHT", closeX, "LEFT", -4, 0)
+        pageSwitch:SetFrameLevel(frame:GetFrameLevel() + 20)
+
+        local search = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+        search:SetSize(300, 24)
+        search:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 6, -12)
+        search:SetAutoFocus(false)
+        search:SetMaxLetters(80)
+        search:SetScript("OnEscapePressed", function(self)
+            if self:GetText() ~= "" then
+                self:SetText("")
+            end
+            self:ClearFocus()
+        end)
+        search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        local searchPlaceholder = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        searchPlaceholder:SetPoint("LEFT", search, "LEFT", 4, 0)
+        searchPlaceholder:SetText("Search name, class, or spec")
+        frame.searchBox = search
+        frame.searchText = ""
+
+        local function styleChip(chip, selected)
+            if not chip.SetBackdrop then return end
+            if selected then
+                chip:SetBackdropColor(0.30, 0.36, 0.48, 1)
+                chip:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+            else
+                chip:SetBackdropColor(0.12, 0.12, 0.15, 1)
+                chip:SetBackdropBorderColor(0.34, 0.34, 0.40, 1)
+            end
+        end
+
+        frame.filter = "all"
+        frame.filterButtons = {}
+        local filters = {
+            { id = "all", label = "All", width = 64 },
+            { id = "match", label = "This character", width = 120 },
+            { id = "other", label = "Other classes", width = 110 },
+        }
+        for index, def in ipairs(filters) do
+            local chip = CreateFrame("Button", nil, frame, "BackdropTemplate")
+            chip:SetSize(def.width, 22)
+            if index == 1 then
+                chip:SetPoint("TOPLEFT", search, "BOTTOMLEFT", -6, -8)
+            else
+                chip:SetPoint("LEFT", frame.filterButtons[index - 1], "RIGHT", 6, 0)
+            end
+            if chip.SetBackdrop then
+                chip:SetBackdrop({
+                    bgFile = "Interface\\Buttons\\WHITE8X8",
+                    edgeFile = "Interface\\Buttons\\WHITE8X8",
+                    tile = false, edgeSize = 1,
+                    insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                })
+            end
+            chip.label = chip:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            chip.label:SetPoint("CENTER")
+            chip.label:SetText(def.label)
+            chip.filterId = def.id
+            chip:SetScript("OnClick", function(self)
+                frame.filter = self.filterId
+                frame:Refresh(true)
+            end)
+            styleChip(chip, def.id == "all")
+            frame.filterButtons[index] = chip
+        end
+        frame.styleChip = styleChip
+
+        local function makeHeaderChip(label, width, anchor, onClick)
+            local chip = CreateFrame("Button", nil, frame, "BackdropTemplate")
+            chip:SetSize(width, 22)
+            chip:SetPoint("LEFT", anchor, "RIGHT", 8, 0)
+            if chip.SetBackdrop then
+                chip:SetBackdrop({
+                    bgFile = "Interface\\Buttons\\WHITE8X8",
+                    edgeFile = "Interface\\Buttons\\WHITE8X8",
+                    tile = false, edgeSize = 1,
+                    insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                })
+                chip:SetBackdropColor(0.12, 0.12, 0.15, 1)
+                chip:SetBackdropBorderColor(0.34, 0.34, 0.40, 1)
+            end
+            chip.label = chip:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            chip.label:SetPoint("CENTER")
+            chip.label:SetText(label)
+            chip:SetScript("OnClick", onClick)
+            chip:SetScript("OnEnter", function(self)
+                if self.SetBackdropBorderColor then
+                    self:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+                end
+            end)
+            chip:SetScript("OnLeave", function(self)
+                if self.SetBackdropBorderColor then
+                    self:SetBackdropBorderColor(0.34, 0.34, 0.40, 1)
+                end
+            end)
+            return chip
+        end
+
+        if not StaticPopupDialogs["WOWKEYB_SETTINGS_NEW_NAME"] then
+            StaticPopupDialogs["WOWKEYB_SETTINGS_NEW_NAME"] = {
+                text = "Name the new profile",
+                button1 = "Create",
+                button2 = "Cancel",
+                hasEditBox = true,
+                maxLetters = 100,
+                OnShow = function(self)
+                    if self.editBox then
+                        self.editBox:SetText("")
+                        self.editBox:SetFocus()
+                    end
+                end,
+                OnAccept = function(self)
+                    local panel = WoWKeyb.optionsPanel
+                    local name = self.editBox and self.editBox:GetText() or ""
+                    if panel and panel.beginCreate then
+                        panel.beginCreate(name)
+                    end
+                end,
+                EditBoxOnEnterPressed = function(self)
+                    local parent = self:GetParent()
+                    local panel = WoWKeyb.optionsPanel
+                    if panel and panel.beginCreate then
+                        panel.beginCreate(self:GetText() or "")
+                    end
+                    if parent then parent:Hide() end
+                end,
+                timeout = 0,
+                whileDead = true,
+                hideOnEscape = true,
+                preferredIndex = 3,
+            }
+        end
+
+        local newChip = makeHeaderChip("New", 64, frame.filterButtons[#frame.filterButtons], function()
+            StaticPopup_Show("WOWKEYB_SETTINGS_NEW_NAME")
+        end)
+        makeHeaderChip("Import", 72, newChip, function()
+            WoWKeyb:ShowImportDialog("ImportedProfile")
+        end)
+
+        local listPanel = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+        listPanel:SetPoint("TOPLEFT", 16, -124)
+        listPanel:SetPoint("BOTTOMRIGHT", -16, 156)
+        if listPanel.SetBackdrop then
+            listPanel:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+                tile = false, edgeSize = 10,
+                insets = { left = 2, right = 2, top = 2, bottom = 2 },
+            })
+            listPanel:SetBackdropColor(0.07, 0.07, 0.09, 0.92)
+            listPanel:SetBackdropBorderColor(0.24, 0.24, 0.30, 0.95)
+        end
+
+        local scroll = CreateFrame("ScrollFrame", "WoWKeybProfileBrowserScroll", listPanel, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 8, -8)
+        scroll:SetPoint("BOTTOMRIGHT", -28, 8)
+        local listChild = CreateFrame("Frame", nil, scroll)
+        listChild:SetSize(560, 1)
+        scroll:SetScrollChild(listChild)
+        frame.scroll = scroll
+        frame.listChild = listChild
+        frame.profileRows = {}
+        frame.headerRows = {}
+
+        local emptyText = listPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        emptyText:SetPoint("CENTER", 0, 8)
+        emptyText:SetWidth(420)
+        emptyText:SetJustifyH("CENTER")
+        emptyText:SetText("No imported profiles yet.\nImport a share code from wowkeyb.gg.")
+        frame.emptyText = emptyText
+
+        local function scrollList(delta)
+            local current = scroll:GetVerticalScroll()
+            local range = scroll:GetVerticalScrollRange() or 0
+            local nextScroll = current - (delta * 52)
+            if nextScroll < 0 then nextScroll = 0 end
+            if nextScroll > range then nextScroll = range end
+            scroll:SetVerticalScroll(nextScroll)
+        end
+        scroll:EnableMouseWheel(true)
+        scroll:SetScript("OnMouseWheel", function(_, delta) scrollList(delta) end)
+        frame.scrollList = scrollList
+
+        local detail = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+        detail:SetPoint("BOTTOMLEFT", 16, 16)
+        detail:SetPoint("BOTTOMRIGHT", -16, 16)
+        detail:SetHeight(128)
+        wkApplyViewerPanelBackdrop(detail)
+        frame.detailCard = detail
+
+        local detailName = detail:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        detailName:SetPoint("TOPLEFT", 14, -12)
+        detailName:SetWidth(420)
+        detailName:SetJustifyH("LEFT")
+        detailName:SetText("Select a profile")
+        frame.detailName = detailName
+
+        local detailMeta = detail:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        detailMeta:SetPoint("TOPLEFT", detailName, "BOTTOMLEFT", 0, -4)
+        detailMeta:SetWidth(640)
+        detailMeta:SetJustifyH("LEFT")
+        detailMeta:SetText("Click one in the list. Actions apply to that profile only.")
+        frame.detailMeta = detailMeta
+
+        local detailStatus = detail:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        detailStatus:SetPoint("TOPLEFT", detailMeta, "BOTTOMLEFT", 0, -2)
+        detailStatus:SetJustifyH("LEFT")
+        detailStatus:SetText("")
+        frame.detailStatus = detailStatus
+
+        local function selectedProfile()
+            local name = frame.selectedName
+            if not name or not WoWKeybDB.profiles[name] then
+                return nil, nil
+            end
+            return name, WoWKeybDB.profiles[name]
+        end
+
+        local function canApplySelection()
+            local name, profile = selectedProfile()
+            if not profile then
+                return false, "Select a profile."
+            end
+            local diagnostics = getProfileMatchDiagnostics(profile)
+            if diagnostics and not diagnostics.matches then
+                return false, "This profile is for a different " .. tostring(diagnostics.reasonSummary or "setup") .. "."
+            end
+            return true, name
+        end
+
+        local function syncSettingsSelection(name)
+            local panel = WoWKeyb.optionsPanel
+            if panel and panel.selectProfile then
+                panel.selectProfile(name)
+            elseif panel then
+                panel.userSelectedProfile = name
+            end
+        end
+
+        local function applySelected()
+            local allowed, reasonOrName = canApplySelection()
+            if not allowed then
+                print("|cffff0000[WoWKeyb]|r " .. tostring(reasonOrName or "That profile cannot be applied."))
+                return
+            end
+            local ok, result = applySelectionByName(reasonOrName)
+            if ok then
+                print("|cff00ff00[WoWKeyb]|r " .. tostring(result))
+                local panel = WoWKeyb.optionsPanel
+                if panel and panel.refreshCurrentProfileText then
+                    panel.refreshCurrentProfileText()
+                end
+                if panel and panel.refreshProfileSelector then
+                    panel.refreshProfileSelector()
+                else
+                    frame:Refresh(false)
+                end
+            else
+                print("|cffff0000[WoWKeyb]|r " .. tostring(result or "Failed to apply"))
+            end
+        end
+
+        local function runProfileAction(methodName)
+            local name = selectedProfile()
+            if not name then
+                return
+            end
+            local panel = WoWKeyb.optionsPanel
+            local method = panel and panel[methodName]
+            if type(method) ~= "function" then
+                print("|cffff0000[WoWKeyb]|r Profile actions are not ready yet.")
+                return
+            end
+            method(name)
+        end
+
+        frame.detailActions = {}
+        local actionDefs = {
+            { id = "apply", label = "Apply", width = 72 },
+            { id = "view", label = "View map", width = 88 },
+            { id = "export", label = "Export", width = 72 },
+            { id = "duplicate", label = "Duplicate", width = 88 },
+            { id = "rename", label = "Rename", width = 76 },
+            { id = "reset", label = "Reset", width = 64 },
+            { id = "delete", label = "Delete", width = 68 },
+        }
+        for index, def in ipairs(actionDefs) do
+            local button = CreateFrame("Button", nil, detail, "BackdropTemplate")
+            button:SetSize(def.width, 22)
+            button.actionId = def.id
+            if index == 1 then
+                button:SetPoint("BOTTOMLEFT", 14, 12)
+            else
+                button:SetPoint("LEFT", frame.detailActions[index - 1], "RIGHT", 6, 0)
+            end
+            if button.SetBackdrop then
+                button:SetBackdrop({
+                    bgFile = "Interface\\Buttons\\WHITE8X8",
+                    edgeFile = "Interface\\Buttons\\WHITE8X8",
+                    tile = false, edgeSize = 1,
+                    insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                })
+                button:SetBackdropColor(0.16, 0.16, 0.2, 1)
+                button:SetBackdropBorderColor(0.4, 0.4, 0.48, 1)
+            end
+            button.label = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            button.label:SetPoint("CENTER")
+            button.label:SetText(def.label)
+            button:SetScript("OnClick", function(self)
+                if self.actionId == "apply" then
+                    applySelected()
+                elseif self.actionId == "view" then
+                    local name = selectedProfile()
+                    if name then WoWKeyb:ShowKeybindingViewer(name) end
+                elseif self.actionId == "export" then
+                    local name = selectedProfile()
+                    if name then WoWKeyb:ShowExportDialog(name) end
+                elseif self.actionId == "duplicate" then
+                    runProfileAction("duplicateProfile")
+                elseif self.actionId == "rename" then
+                    runProfileAction("renameProfile")
+                elseif self.actionId == "reset" then
+                    runProfileAction("resetProfile")
+                elseif self.actionId == "delete" then
+                    runProfileAction("deleteProfile")
+                end
+            end)
+            button:SetScript("OnEnter", function(self)
+                if self.SetBackdropColor then
+                    self:SetBackdropColor(0.24, 0.28, 0.36, 1)
+                    self:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+                end
+                if self.actionId == "apply" then
+                    local allowed, reason = canApplySelection()
+                    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                    GameTooltip:ClearLines()
+                    if allowed then
+                        GameTooltip:AddLine("Apply this profile to your current character.", 1, 1, 1)
+                    else
+                        GameTooltip:AddLine(tostring(reason or "Cannot apply this profile."), 1, 0.82, 0.35, true)
+                    end
+                    GameTooltip:Show()
+                end
+            end)
+            button:SetScript("OnLeave", function(self)
+                GameTooltip:Hide()
+                if self.SetBackdropColor then
+                    self:SetBackdropColor(0.16, 0.16, 0.2, 1)
+                    self:SetBackdropBorderColor(0.4, 0.4, 0.48, 1)
+                end
+            end)
+            button:Hide()
+            frame.detailActions[index] = button
+        end
+
+        local function updateDetail()
+            local name, profile = selectedProfile()
+            if not profile then
+                detailName:SetText("Select a profile")
+                detailMeta:SetText("Click one in the list. Actions apply to that profile only.")
+                detailMeta:SetTextColor(0.8, 0.8, 0.8)
+                detailStatus:SetText("")
+                for _, button in ipairs(frame.detailActions) do
+                    button:Hide()
+                end
+                return
+            end
+            local _, contextLine = profileBrowserContext(profile)
+            local keybindCount, macroCount = computeExportSummaryCounts(profile)
+            local diagnostics = getProfileMatchDiagnostics(profile)
+            local matches = diagnostics and diagnostics.matches
+            local isActive = tostring(WoWKeybDB.currentProfile or "") == tostring(name)
+            detailName:SetText(name)
+            detailMeta:SetText(contextLine)
+            local cr, cg, cb = profileBrowserClassColor(profile)
+            detailMeta:SetTextColor(cr, cg, cb)
+            local status = matches and "Ready for this character" or profileBrowserMismatchLabel(diagnostics and diagnostics.reasonSummary)
+            if isActive then
+                status = "Active"
+            end
+            detailStatus:SetText(string.format("%s    ·    %d keys    ·    %d macros", status, keybindCount, macroCount))
+            if isActive or matches then
+                detailStatus:SetTextColor(0.45, 0.95, 0.55)
+            else
+                detailStatus:SetTextColor(0.95, 0.78, 0.35)
+            end
+            for _, button in ipairs(frame.detailActions) do
+                button:Show()
+                if button.actionId == "apply" then
+                    button:SetAlpha(matches and 1 or 0.45)
+                else
+                    button:SetAlpha(1)
+                end
+            end
+        end
+        frame.updateDetail = updateDetail
+
+        local function hidePool(pool)
+            for _, row in ipairs(pool) do
+                row:Hide()
+            end
+        end
+
+        local function acquireHeader(index)
+            local row = frame.headerRows[index]
+            if row then
+                row:Show()
+                return row
+            end
+            row = CreateFrame("Frame", nil, listChild)
+            row:SetSize(548, 18)
+            row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            row.label:SetPoint("LEFT", 2, 0)
+            row:EnableMouseWheel(true)
+            row:SetScript("OnMouseWheel", function(_, delta) scrollList(delta) end)
+            frame.headerRows[index] = row
+            return row
+        end
+
+        local function acquireProfileRow(index)
+            local row = frame.profileRows[index]
+            if row then
+                row:Show()
+                return row
+            end
+            row = CreateFrame("Button", nil, listChild, "BackdropTemplate")
+            row:SetSize(548, 48)
+            row:RegisterForClicks("LeftButtonUp")
+            if row.SetBackdrop then
+                row:SetBackdrop({
+                    bgFile = "Interface\\Buttons\\WHITE8X8",
+                    edgeFile = "Interface\\Buttons\\WHITE8X8",
+                    tile = false, edgeSize = 1,
+                    insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                })
+            end
+            row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.nameText:SetPoint("TOPLEFT", 10, -7)
+            row.nameText:SetWidth(360)
+            row.nameText:SetJustifyH("LEFT")
+            row.nameText:SetWordWrap(false)
+            row.metaText = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            row.metaText:SetPoint("TOPLEFT", 10, -26)
+            row.metaText:SetWidth(340)
+            row.metaText:SetJustifyH("LEFT")
+            row.metaText:SetWordWrap(false)
+            row.statusText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.statusText:SetPoint("TOPRIGHT", -10, -8)
+            row.statusText:SetJustifyH("RIGHT")
+            row.countText = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            row.countText:SetPoint("TOPRIGHT", -10, -26)
+            row.countText:SetJustifyH("RIGHT")
+            row:SetScript("OnClick", function(self)
+                local name = self.entry and self.entry.name or nil
+                local now = GetTime()
+                local isDouble = self.lastClickName == name and self.lastClickTime and (now - self.lastClickTime) <= 0.3
+                self.lastClickName = name
+                self.lastClickTime = now
+                frame.selectedName = name
+                if name then
+                    syncSettingsSelection(name)
+                end
+                if isDouble then
+                    applySelected()
+                    return
+                end
+                frame:Refresh(false)
+            end)
+            row:SetScript("OnEnter", function(self)
+                if self.SetBackdropColor and frame.selectedName ~= (self.entry and self.entry.name) then
+                    self:SetBackdropColor(0.18, 0.18, 0.22, 1)
+                    self:SetBackdropBorderColor(0.45, 0.45, 0.52, 1)
+                end
+                local entry = self.entry
+                if entry and entry.reasons and #entry.reasons > 0 then
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    GameTooltip:ClearLines()
+                    GameTooltip:AddLine(entry.name, 1, 1, 1)
+                    for _, reason in ipairs(entry.reasons) do
+                        GameTooltip:AddLine(reason, 0.95, 0.82, 0.45, true)
+                    end
+                    GameTooltip:Show()
+                end
+            end)
+            row:SetScript("OnLeave", function(self)
+                GameTooltip:Hide()
+                if not self.SetBackdropColor then return end
+                local selected = frame.selectedName == (self.entry and self.entry.name)
+                if selected then
+                    self:SetBackdropColor(0.20, 0.26, 0.36, 1)
+                    self:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+                else
+                    self:SetBackdropColor(0.11, 0.11, 0.14, 1)
+                    self:SetBackdropBorderColor(0.28, 0.28, 0.34, 1)
+                end
+            end)
+            row:EnableMouseWheel(true)
+            row:SetScript("OnMouseWheel", function(_, delta) scrollList(delta) end)
+            frame.profileRows[index] = row
+            return row
+        end
+
+        function frame:Refresh(resetScroll)
+            if frame.refreshing then return end
+            frame.refreshing = true
+
+            local query = tostring(frame.searchText or ""):lower()
+            local filterId = frame.filter or "all"
+            for _, chip in ipairs(frame.filterButtons) do
+                frame.styleChip(chip, chip.filterId == filterId)
+            end
+
+            local panel = WoWKeyb.optionsPanel
+            if panel and panel.getSelectedProfile then
+                local fromPanel = panel.getSelectedProfile()
+                if fromPanel and fromPanel ~= BLIZZARD_DEFAULT_PROFILE and WoWKeybDB.profiles[fromPanel] then
+                    frame.selectedName = fromPanel
+                elseif fromPanel == BLIZZARD_DEFAULT_PROFILE then
+                    frame.selectedName = nil
+                end
+            end
+            if frame.selectedName and not WoWKeybDB.profiles[frame.selectedName] then
+                frame.selectedName = nil
+            end
+
+            local currentName = tostring(WoWKeybDB.currentProfile or "")
+            local entries = {}
+            local totalCount = 0
+            local matchTotal = 0
+            for name, profile in pairs(WoWKeybDB.profiles or {}) do
+                if type(profile) == "table" then
+                    totalCount = totalCount + 1
+                    local diagnostics = getProfileMatchDiagnostics(profile)
+                    local matches = diagnostics and diagnostics.matches or false
+                    if matches then
+                        matchTotal = matchTotal + 1
+                    end
+                    local _, contextLine, searchBlob = profileBrowserContext(profile)
+                    local haystack = (tostring(name) .. " " .. searchBlob):lower()
+                    local queryOk = query == "" or haystack:find(query, 1, true) ~= nil
+                    local filterOk = filterId == "all" or (filterId == "match" and matches) or (filterId == "other" and not matches)
+                    if queryOk and filterOk then
+                        local keybindCount, macroCount = computeExportSummaryCounts(profile)
+                        entries[#entries + 1] = {
+                            name = tostring(name),
+                            sortName = tostring(name):lower(),
+                            profile = profile,
+                            matches = matches,
+                            active = tostring(name) == currentName,
+                            contextLine = contextLine,
+                            statusLabel = matches and "Ready" or profileBrowserMismatchLabel(diagnostics and diagnostics.reasonSummary),
+                            reasons = (diagnostics and not matches) and diagnostics.reasons or nil,
+                            keybindCount = keybindCount,
+                            macroCount = macroCount,
+                        }
+                    end
+                end
+            end
+            table.sort(entries, function(a, b)
+                if a.matches ~= b.matches then
+                    return a.matches
+                end
+                if a.active ~= b.active then
+                    return a.active
+                end
+                return a.sortName < b.sortName
+            end)
+
+            if totalCount == 0 then
+                frame.subtitle:SetText("Nothing imported yet.")
+            else
+                frame.subtitle:SetText(string.format("Profiles   ·   %d imported   ·   %d for this character", totalCount, matchTotal))
+            end
+
+            hidePool(frame.headerRows)
+            hidePool(frame.profileRows)
+
+            local y = -4
+            local headerIndex = 0
+            local rowIndex = 0
+            local lastGroup = nil
+            for _, entry in ipairs(entries) do
+                local group = entry.matches and "This character" or "Other classes"
+                if group ~= lastGroup then
+                    lastGroup = group
+                    headerIndex = headerIndex + 1
+                    local header = acquireHeader(headerIndex)
+                    header:SetPoint("TOPLEFT", listChild, "TOPLEFT", 4, y)
+                    header.label:SetText(group)
+                    y = y - 22
+                end
+                rowIndex = rowIndex + 1
+                local row = acquireProfileRow(rowIndex)
+                row.entry = entry
+                row:SetPoint("TOPLEFT", listChild, "TOPLEFT", 2, y)
+                row.nameText:SetText(entry.name)
+                local cr, cg, cb = profileBrowserClassColor(entry.profile)
+                row.metaText:SetText(entry.contextLine)
+                row.metaText:SetTextColor(cr, cg, cb)
+                local statusR, statusG, statusB = 0.55, 0.85, 0.55
+                local status = entry.statusLabel
+                if entry.active then
+                    status = "Active"
+                    statusR, statusG, statusB = 0.45, 0.95, 0.55
+                elseif not entry.matches then
+                    statusR, statusG, statusB = 0.95, 0.78, 0.35
+                end
+                row.statusText:SetText(status)
+                row.statusText:SetTextColor(statusR, statusG, statusB)
+                row.countText:SetText(string.format("%d keys   ·   %d macros", entry.keybindCount, entry.macroCount))
+                local selected = frame.selectedName == entry.name
+                if row.SetBackdropColor then
+                    if selected then
+                        row:SetBackdropColor(0.20, 0.26, 0.36, 1)
+                        row:SetBackdropBorderColor(0.78, 0.84, 1, 1)
+                    else
+                        row:SetBackdropColor(0.11, 0.11, 0.14, 1)
+                        row:SetBackdropBorderColor(0.28, 0.28, 0.34, 1)
+                    end
+                end
+                y = y - 54
+            end
+
+            local listHeight = math.max(scroll:GetHeight() or 0, math.abs(y) + 8)
+            listChild:SetHeight(listHeight)
+            scroll:UpdateScrollChildRect()
+            if resetScroll then
+                scroll:SetVerticalScroll(0)
+            else
+                local range = scroll:GetVerticalScrollRange() or 0
+                local current = scroll:GetVerticalScroll()
+                if current > range then
+                    scroll:SetVerticalScroll(range)
+                end
+            end
+
+            updateDetail()
+            if #entries == 0 then
+                if totalCount == 0 then
+                    emptyText:SetText("No imported profiles yet.\nImport a share code from wowkeyb.gg.")
+                elseif query ~= "" then
+                    emptyText:SetText("No profiles match that search.")
+                else
+                    emptyText:SetText("No profiles in this filter.")
+                end
+                emptyText:Show()
+            else
+                emptyText:Hide()
+            end
+
+            frame.refreshing = false
+        end
+
+        search:SetScript("OnTextChanged", function(self)
+            searchPlaceholder:SetShown(self:GetText() == "")
+            local nextQuery = tostring(self:GetText() or "")
+            if nextQuery == frame.searchText then
+                return
+            end
+            frame.searchText = nextQuery
+            frame:Refresh(true)
+        end)
+        searchPlaceholder:SetShown(true)
+
+        profileBrowser = frame
+    end
+
+    profileBrowser:Show()
+    raiseWoWKeybPopup(profileBrowser, 180)
+    profileBrowser:Refresh(false)
+    if viewerFrame and viewerFrame:IsShown() then
+        viewerFrame:Hide()
+    end
+end
+
+function WoWKeyb:HideSettingsPage()
+    if profileBrowser then
+        profileBrowser:Hide()
+    end
+end
+
+local function snapshotShownPoint(target)
+    if not target or not target:IsShown() then
+        return nil
+    end
+    local point, relativeTo, relativePoint, x, y = target:GetPoint(1)
+    if not point then
+        return nil
+    end
+    return {
+        point = point,
+        relativeTo = relativeTo,
+        relativePoint = relativePoint,
+        x = x,
+        y = y,
+    }
+end
+
+local function applyShownPoint(target, snap)
+    if not target or not snap or not snap.point then
         return
     end
-    if InterfaceOptionsFrame_OpenToCategory and WoWKeyb.optionsPanel then
-        InterfaceOptionsFrame_OpenToCategory(WoWKeyb.optionsPanel)
-        InterfaceOptionsFrame_OpenToCategory(WoWKeyb.optionsPanel) -- Call twice for older Blizzard quirk
+    target:ClearAllPoints()
+    target:SetPoint(snap.point, snap.relativeTo or UIParent, snap.relativePoint or snap.point, snap.x or 0, snap.y or 0)
+end
+
+function WoWKeyb:Open(page)
+    if page == "settings" then
+        local snap = snapshotShownPoint(viewerFrame)
+        WoWKeyb:ShowProfileBrowser()
+        applyShownPoint(profileBrowser, snap)
+        return
     end
+    local snap = snapshotShownPoint(profileBrowser)
+    WoWKeyb:ShowKeybindingViewer(nil)
+    applyShownPoint(viewerFrame, snap)
+end
+
+function WoWKeyb:ToggleProfileBrowser()
+    WoWKeyb:Open("settings")
+end
+
+local function openAddonSettings()
+    WoWKeyb:Open("settings")
 end
 
 local function createSettingsPanel()
@@ -6317,7 +7300,7 @@ local function createSettingsPanel()
 
     local subtitle = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
-    subtitle:SetText("Import and apply your WoWKeyb profiles.")
+    subtitle:SetText("Left-click the minimap icon for the keybind map. Right-click for profiles.")
 
     local versionText = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     versionText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -4)
@@ -6334,11 +7317,19 @@ local function createSettingsPanel()
     refreshCurrentProfileText()
 
     local importBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    importBtn:SetSize(180, 24)
+    importBtn:SetSize(160, 24)
     importBtn:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", 0, -8)
     importBtn:SetText("Import Profile")
     importBtn:SetScript("OnClick", function()
         WoWKeyb:ShowImportDialog("ImportedProfile")
+    end)
+
+    local browseBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    browseBtn:SetSize(160, 24)
+    browseBtn:SetPoint("LEFT", importBtn, "RIGHT", 8, 0)
+    browseBtn:SetText("Browse Profiles")
+    browseBtn:SetScript("OnClick", function()
+        WoWKeyb:ShowProfileBrowser()
     end)
 
     local profileLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
@@ -6418,7 +7409,7 @@ local function createSettingsPanel()
 
     local function buildDefaultLayoutBars()
         local bars = {}
-        for barIdx = 1, 5 do
+        for barIdx = 1, VIEWER_BAR_COUNT do
             bars[barIdx] = {
                 id = "bar" .. tostring(barIdx),
                 slots = 12,
@@ -6430,6 +7421,7 @@ local function createSettingsPanel()
                 },
                 orientation = "horizontal",
                 scale = 1,
+                enabled = barIdx == 1 or (isActionBarShown and isActionBarShown(barIdx)) or false,
             }
         end
         return bars
@@ -6548,7 +7540,7 @@ local function createSettingsPanel()
 
         -- Keep dropdown aligned with real applied/current profile state,
         -- especially after imports that update WoWKeybDB.currentProfile.
-        local preferredSelection = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
+        local preferredSelection = panel.userSelectedProfile or WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
         if preferredSelection == BLIZZARD_DEFAULT_PROFILE or WoWKeybDB.profiles[preferredSelection] then
             selectedProfileName = preferredSelection
         end
@@ -6561,6 +7553,7 @@ local function createSettingsPanel()
             end
         end
         if not isValidSelection then
+            panel.userSelectedProfile = nil
             selectedProfileName = WoWKeybDB.currentProfile or BLIZZARD_DEFAULT_PROFILE
             local selectedIsStoredProfile = selectedProfileName == BLIZZARD_DEFAULT_PROFILE or WoWKeybDB.profiles[selectedProfileName]
             if not selectedIsStoredProfile then
@@ -6568,30 +7561,18 @@ local function createSettingsPanel()
             end
         end
 
-        local contextKey = buildCurrentPlayerContextKey()
         local preferredProfile = getPreferredProfileForCurrentContext()
         local labels = buildPlayerLabelCollection()
         local classLabel = labels.class.variants[1] or "Unknown"
         local specLabel = labels.spec.names[1] or labels.spec.ids[1] or "-"
         local heroLabel = labels.hero.names[1] or labels.hero.ids[1] or "-"
 
-        local mismatchLines = {}
-        local matchingProfiles = {}
-        local function summarizeNames(items, maxShown)
-            local count = #items
-            if count == 0 then
-                return "none"
+        local matchCount = 0
+        for _, name in ipairs(profiles) do
+            local diagnostics = getProfileMatchDiagnostics(WoWKeybDB.profiles[name])
+            if diagnostics and diagnostics.matches then
+                matchCount = matchCount + 1
             end
-            local shown = {}
-            local limit = math.min(count, maxShown)
-            for i = 1, limit do
-                shown[#shown + 1] = tostring(items[i])
-            end
-            local summary = table.concat(shown, ", ")
-            if count > maxShown then
-                summary = summary .. string.format(" ... +%d more", count - maxShown)
-            end
-            return summary
         end
         UIDropDownMenu_Initialize(profileDropdown, function(self, level)
             for _, name in ipairs(selectorOptions) do
@@ -6607,28 +7588,19 @@ local function createSettingsPanel()
                     end
                     if diagnostics and not diagnostics.matches then
                         displayName = string.format("%s - NO MATCH (%s)", displayName, diagnostics.reasonSummary)
-                        local profileClass = tostring(profile and profile.class or "Unknown")
-                        local profileSpec = tostring(profile and (profile.spec or profile.spec_id or profile.specId or profile.specialization) or "-")
-                        local profileHero = tostring(profile and (profile.heroTalent or profile.hero_talent or profile.hero_talent_id or profile.heroTalentId) or "-")
-                        mismatchLines[#mismatchLines + 1] = string.format(
-                            " - %s: %s (profile: %s / %s / %s)",
-                            name,
-                            tostring(diagnostics.reasonSummary or "unknown"),
-                            profileClass,
-                            profileSpec,
-                            profileHero
-                        )
-                    else
-                        matchingProfiles[#matchingProfiles + 1] = name
                     end
                 end
                 info.text = displayName
                 info.checked = (name == selectedProfileName)
                 info.func = function()
                     selectedProfileName = name
+                    panel.userSelectedProfile = name
                     UIDropDownMenu_SetText(profileDropdown, name)
                     panel.forceVisibleProfileName = nil
                     refreshApplyButtonState()
+                    if WoWKeyb.RefreshProfileBrowser then
+                        WoWKeyb:RefreshProfileBrowser()
+                    end
                 end
                 UIDropDownMenu_AddButton(info, level)
             end
@@ -6636,31 +7608,40 @@ local function createSettingsPanel()
         UIDropDownMenu_SetText(profileDropdown, selectedProfileName or BLIZZARD_DEFAULT_PROFILE)
         refreshApplyButtonState()
 
-        local mismatchCount = #mismatchLines
-        local mismatchLinesToShow = {}
-        local mismatchLimit = 6
-        for i = 1, math.min(mismatchCount, mismatchLimit) do
-            mismatchLinesToShow[#mismatchLinesToShow + 1] = mismatchLines[i]
-        end
-
-        local statusLines = {
-            string.format("Character setup: %s / %s / %s", tostring(classLabel), tostring(specLabel), tostring(heroLabel)),
-            string.format("Context key: %s", tostring(contextKey)),
-            string.format("Profiles for this setup (%d): %s", #matchingProfiles, summarizeNames(matchingProfiles, 6)),
-            "",
-        }
-        if mismatchCount == 0 then
-            statusLines[#statusLines + 1] = "Other profiles: none"
-        else
-            statusLines[#statusLines + 1] = string.format("Other profiles (%d):", mismatchCount)
-            for _, line in ipairs(mismatchLinesToShow) do
-                statusLines[#statusLines + 1] = line
-            end
-            if mismatchCount > mismatchLimit then
-                statusLines[#statusLines + 1] = string.format(" - ... +%d more (use /wowkeyb contexts)", mismatchCount - mismatchLimit)
+        local importedCount = 0
+        for _, name in ipairs(selectorOptions) do
+            if name ~= BLIZZARD_DEFAULT_PROFILE then
+                importedCount = importedCount + 1
             end
         end
-        profileStatusText:SetText(table.concat(statusLines, "\n"))
+        profileStatusText:SetText(string.format(
+            "%s / %s / %s\n%d imported, %d for this character.\nUse Browse Profiles to search the full list.",
+            tostring(classLabel),
+            tostring(specLabel),
+            tostring(heroLabel),
+            importedCount,
+            matchCount
+        ))
+        if WoWKeyb.RefreshProfileBrowser then
+            WoWKeyb:RefreshProfileBrowser()
+        end
+    end
+    panel.selectProfile = function(name)
+        local target = tostring(name or "")
+        if target == "" then
+            return
+        end
+        if target ~= BLIZZARD_DEFAULT_PROFILE and not WoWKeybDB.profiles[target] then
+            return
+        end
+        selectedProfileName = target
+        panel.userSelectedProfile = target
+        panel.forceVisibleProfileName = nil
+        UIDropDownMenu_SetText(profileDropdown, target)
+        refreshApplyButtonState()
+    end
+    panel.getSelectedProfile = function()
+        return selectedProfileName
     end
     panel.refreshProfileSelector = refreshProfileSelector
     refreshProfileSelector()
@@ -7266,9 +8247,68 @@ local function createSettingsPanel()
         WoWKeybDB.debugApplyAssignments = self:GetChecked() and true or false
     end)
 
-    -- Final spacing pass: keep New/Copy controls below help/debug controls.
-    newProfileLabel:ClearAllPoints()
-    newProfileLabel:SetPoint("TOPLEFT", applyLogCheckbox, "BOTTOMLEFT", 2, -16)
+    panel.beginCreate = function(rawName)
+        newProfileEdit:SetText(tostring(rawName or ""))
+        local targetName = validateNewProfileNameFromInput()
+        if not targetName then
+            return
+        end
+        StaticPopup_Show("WOWKEYB_CREATE_PROFILE_MODE", targetName, nil, { targetName = targetName })
+    end
+    panel.duplicateProfile = function(name)
+        if name and name ~= "" then
+            selectedProfileName = name
+            panel.userSelectedProfile = name
+        end
+        duplicateBtn:Click()
+    end
+    panel.renameProfile = function(name)
+        if name and name ~= "" then
+            selectedProfileName = name
+            panel.userSelectedProfile = name
+        end
+        renameBtn:Click()
+    end
+    panel.deleteProfile = function(name)
+        if name and name ~= "" then
+            selectedProfileName = name
+            panel.userSelectedProfile = name
+        end
+        deleteBtn:Click()
+    end
+    panel.resetProfile = function(name)
+        if name and name ~= "" then
+            selectedProfileName = name
+            panel.userSelectedProfile = name
+        end
+        resetBtn:Click()
+    end
+
+    local legacySettingsWidgets = {
+        importBtn,
+        browseBtn,
+        profileLabel,
+        profileDropdown,
+        profileStatusText,
+        newProfileLabel,
+        newProfileEdit,
+        createBtn,
+        duplicateBtn,
+        selectedViewerBtn,
+        exportBtn,
+        renameBtn,
+        deleteBtn,
+        resetBtn,
+        applyBtn,
+        helpText,
+    }
+    for _, widget in ipairs(legacySettingsWidgets) do
+        if widget and widget.Hide then
+            widget:Hide()
+        end
+    end
+    applyLogCheckbox:ClearAllPoints()
+    applyLogCheckbox:SetPoint("TOPLEFT", currentProfileText, "BOTTOMLEFT", -2, -18)
 
     WoWKeyb.optionsPanel = panel
 
@@ -7305,17 +8345,15 @@ local function createMinimapButton()
             iconCoords = { 0.02, 0.98, 0.02, 0.98 },
             OnClick = function(_, mouseButton)
                 if mouseButton == "RightButton" then
-                    openAddonSettings()
+                    WoWKeyb:Open("settings")
                     return
                 end
-                if WoWKeyb.ToggleLiveViewer then
-                    WoWKeyb:ToggleLiveViewer()
-                end
+                WoWKeyb:Open("map")
             end,
             OnTooltipShow = function(tooltip)
                 tooltip:AddLine("WoWKeyb")
-                tooltip:AddLine("Left-click: Open keybind keyboard", 0.8, 0.8, 0.8)
-                tooltip:AddLine("Right-click: Profile settings", 0.8, 0.8, 0.8)
+                tooltip:AddLine("Left-click: Keybind map", 0.8, 0.8, 0.8)
+                tooltip:AddLine("Right-click: Profiles", 0.8, 0.8, 0.8)
                 tooltip:AddLine("Drag: Move icon", 0.8, 0.8, 0.8)
             end,
         })
@@ -7372,13 +8410,9 @@ local function slashHandler(msg)
         WoWKeyb:ShowImportDialog(arg)
         return
 
-    elseif cmd == "list" or cmd == "l" then
-        local list = listStoredProfiles(false)
-        if #list == 0 then
-            print("|cff00ff00[WoWKeyb]|r No stored profiles.")
-        else
-            print("|cff00ff00[WoWKeyb]|r Stored profiles (account-wide): " .. table.concat(list, ", "))
-        end
+    elseif cmd == "list" or cmd == "l" or cmd == "profiles" or cmd == "browse" or cmd == "p" then
+        WoWKeyb:ShowProfileBrowser()
+        return
 
     elseif cmd == "listall" or cmd == "la" then
         local list = listStoredProfiles(false)
@@ -7640,10 +8674,10 @@ local function slashHandler(msg)
         print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
         print("  /wowkeyb toggle       - Toggle between last two profiles")
         print("  /wowkeyb import <name> - Import profile from profile code")
+        print("  /wowkeyb profiles     - Browse imported profiles")
         print("  /wowkeyb export [name] - Export selected profile as share code string")
         print("  /wowkeyb share <player> [name] - Whisper a profile to another WoWKeyb user")
-        print("  /wowkeyb list         - List stored profiles")
-        print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
+        print("  /wowkeyb options      - Open the profiles page")
         return
 
     else
@@ -7652,10 +8686,10 @@ local function slashHandler(msg)
         print("  /wowkeyb switch <name> - Switch to a profile (alias for apply)")
         print("  /wowkeyb toggle       - Toggle between last two profiles")
         print("  /wowkeyb import <name> - Import profile from profile code")
+        print("  /wowkeyb profiles     - Browse imported profiles")
         print("  /wowkeyb export [name] - Export selected profile as share code string")
         print("  /wowkeyb share <player> [name] - Whisper a profile to another WoWKeyb user")
         print("  /wowkeyb view [name]   - Open read-only keybinding map viewer")
-        print("  /wowkeyb list         - List stored profiles")
         print("  /wowkeyb listall      - List all profiles (ignore class/spec filter)")
         print("  /wowkeyb mismatches   - List non-matching profiles and reasons")
         print("  /wowkeyb contexts     - List profile class/spec/hero contexts")
@@ -7666,7 +8700,7 @@ local function slashHandler(msg)
         print("  /wowkeyb viewerdebug on|off - Toggle viewer slot debug logs")
         print("  /wowkeyb labels       - Print class/spec/hero ID+label collection")
         print("  /wowkeyb delete <name> - Delete a stored profile")
-        print("  /wowkeyb options      - Open WoWKeyb AddOn settings")
+        print("  /wowkeyb options      - Open the profiles page")
     end
 end
 
@@ -7895,6 +8929,8 @@ function WoWKeyb:ShowImportDialog(profileName)
     importFrame.profileName = profileName
     importFrame:SetScript("OnDragStart", function() importFrame:StartMoving() end)
     importFrame:SetScript("OnDragStop", function() importFrame:StopMovingOrSizing() end)
+    importFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    importFrame:SetFrameLevel(240)
     importFrame:Show()
     WoWKeybImportEdit:SetText("")
     WoWKeybImportEdit:SetFocus()
