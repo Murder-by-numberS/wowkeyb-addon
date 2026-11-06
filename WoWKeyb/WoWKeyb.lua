@@ -5914,6 +5914,10 @@ function WoWKeyb:ShowKeybindingViewer(profileName)
         title:SetPoint("TOPLEFT", viewerContent, "TOPLEFT", 0, 0)
         title:SetText("WoWKeyb")
 
+        local versionText = viewerFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        versionText:SetPoint("LEFT", title, "RIGHT", 8, -1)
+        versionText:SetText("v" .. getAddonVersion())
+
         local pageSwitch = wkCreatePageSwitcher(viewerFrame, "map")
         pageSwitch:SetPoint("TOPRIGHT", viewerFrame, "TOPRIGHT", -20, -18)
         pageSwitch:SetFrameLevel(viewerFrame:GetFrameLevel() + 20)
@@ -6554,6 +6558,10 @@ function WoWKeyb:ShowProfileBrowser()
         local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
         title:SetPoint("TOPLEFT", 18, -16)
         title:SetText("WoWKeyb")
+
+        local versionText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        versionText:SetPoint("LEFT", title, "RIGHT", 8, -1)
+        versionText:SetText("v" .. getAddonVersion())
 
         local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
         subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)

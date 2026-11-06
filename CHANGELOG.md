@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.96
+
+- The addon version shows next to the WoWKeyb title on the keybind map and the profile window.
+
 ## 1.2.95
 
 - Export no longer has Copy All. Press Ctrl+C and the share-code window closes.
